@@ -23,7 +23,7 @@ class ResponseSchema(BaseModel):
 
     strict: bool | None = Field(default=None)
     """Whether to enable strict schema adherence when generating the output. If set to true, the model will always follow the exact schema defined in the schema field.
-    OpenAI and Mistral only."""
+    OpenAI and Mistral only. Ignored by Ollama."""
 
 
 class BatchConfig(BaseModel):
@@ -131,7 +131,7 @@ class GenerateConfigArgs(TypedDict, total=False):
     """Include reasoning in chat message history sent to generate."""
 
     response_schema: ResponseSchema | None
-    """Request a response format as JSONSchema (output should still be validated). OpenAI, Google, and Mistral only."""
+    """Request a response format as JSONSchema (output should still be validated). OpenAI, Google, Mistral, and Ollama only."""
 
     extra_body: dict[str, Any] | None
     """Extra body to be sent with requests to OpenAI compatible servers. OpenAI, vLLM, and SGLang only."""
