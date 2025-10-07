@@ -2,6 +2,15 @@
 hooks:
 	pre-commit install
 
+.PHONY: conda
+conda:
+	conda env create -f environment.yml
+
+.PHONY: install
+install:
+	uv pip install --python $$(which python) -r requirements.txt
+	uv pip install --python $$(which python) -e .[dev]
+
 .PHONY: ruff
 ruff:
 	ruff check --fix
