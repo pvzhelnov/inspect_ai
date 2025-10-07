@@ -41,7 +41,6 @@ from .util.hooks import HttpxHooks
 
 def _strip_not_given(value: Any) -> Any:
     """Recursively remove OpenAI NOT_GIVEN sentinels from request payloads."""
-
     if isinstance(value, dict):
         return {
             key: _strip_not_given(item)
@@ -57,7 +56,6 @@ def _strip_not_given(value: Any) -> Any:
 
 def _error_message(response: httpx.Response, body: Any) -> str:
     """Extract a human-readable error message from an Ollama response."""
-
     if isinstance(body, dict):
         error_field = body.get("error")
         if isinstance(error_field, dict):
@@ -171,9 +169,11 @@ class OllamaAPI(ModelAPI):
         request = dict(
             messages=await messages_to_openai(input),
             tools=openai_chat_tools(tools) if have_tools else NOT_GIVEN,
-            tool_choice=
-            openai_chat_tool_choice(tool_choice) if have_tools else NOT_GIVEN,
+            tool_choice=openai_chat_tool_choice(tool_choice)
+            if have_tools
+            else NOT_GIVEN,
             extra_headers={HttpxHooks.REQUEST_ID_HEADER: request_id},
+            stream=False,
             **completion_params,
         )
 
@@ -218,7 +218,9 @@ class OllamaAPI(ModelAPI):
         query_params: dict[str, Any] | None
         if isinstance(extra_query, dict):
             query_params = {
-                key: value for key, value in extra_query.items() if value is not NOT_GIVEN
+                key: value
+                for key, value in extra_query.items()
+                if value is not NOT_GIVEN
             }
         else:
             query_params = None
@@ -268,9 +270,7 @@ class OllamaAPI(ModelAPI):
         data = response.json()
         return ChatCompletion.model_validate(data)
 
-    def completion_params(
-        self, config: GenerateConfig, tools: bool
-    ) -> dict[str, Any]:
+    def completion_params(self, config: GenerateConfig, tools: bool) -> dict[str, Any]:
         params = openai_completion_params(
             model=self.service_model_name(),
             config=config,
