@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import pytest
 from pydantic import BaseModel
 
 from inspect_ai.model import GenerateConfig, ResponseSchema
@@ -11,11 +14,15 @@ class Color(BaseModel):
     blue: int
 
 
-def test_ollama_structured_output_completion_params() -> None:
+@pytest.fixture()
+def ollama_api() -> OllamaAPI:
     api = OllamaAPI.__new__(OllamaAPI)
     api.model_name = "ollama/llama3.1"
     api.service = "Ollama"
+    return api
 
+
+def test_ollama_structured_output_completion_params(ollama_api: OllamaAPI) -> None:
     config = GenerateConfig(
         response_schema=ResponseSchema(
             name="color",
@@ -25,7 +32,7 @@ def test_ollama_structured_output_completion_params() -> None:
         )
     )
 
-    params = OllamaAPI.completion_params(api, config=config, tools=False)
+    params = ollama_api.completion_params(config=config, tools=False)
 
     assert "response_format" not in params
     assert params["format"] == {
@@ -40,4 +47,3 @@ def test_ollama_structured_output_completion_params() -> None:
         "description": "RGB color values",
         "title": "color",
     }
-
