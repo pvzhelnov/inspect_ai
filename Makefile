@@ -27,3 +27,7 @@ check: ruff mypy
 .PHONY: test
 test:
 	pytest
+
+.PHONY: experiment
+experiment:
+	inspect eval examples/structured.py@rgb_color --model ollama/qwen3:4b-fp16
