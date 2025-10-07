@@ -28,6 +28,14 @@ check: ruff mypy
 test:
 	pytest
 
-.PHONY: experiment
-experiment:
+.PHONY: sgr/ollama
+sgr/ollama:
 	inspect eval examples/structured.py@rgb_color --model ollama/qwen3:4b-fp16
+
+.PHONY: sgr/openrouter
+sgr/openrouter:
+	inspect eval examples/structured.py@rgb_color --model openrouter/qwen/qwen3-235b-a22b:free
+
+# https://abdullin.com/schema-guided-reasoning/
+.PHONY: sgr
+experiment: sgr/ollama sgr/openrouter
