@@ -2,6 +2,15 @@
 hooks:
 	pre-commit install
 
+.PHONY: conda
+conda:
+	conda env create -f environment.yml
+
+.PHONY: install
+install:
+	uv pip install --python $$(which python) -r requirements.txt
+	uv pip install --python $$(which python) -e .[dev]
+
 .PHONY: ruff
 ruff:
 	ruff check --fix
@@ -18,3 +27,19 @@ check: ruff mypy
 .PHONY: test
 test:
 	pytest
+
+.PHONY: sgr/ollama
+sgr/ollama:
+	inspect eval examples/structured.py@rgb_color --model ollama/qwen3:4b-fp16
+
+.PHONY: sgr/openrouter
+sgr/openrouter:
+	inspect eval examples/structured.py@rgb_color --model openrouter/qwen/qwen3-235b-a22b:free
+
+.PHONY: sgr/google
+sgr/google:
+	inspect eval examples/structured.py@rgb_color --model google/gemini-2.0-flash
+
+# https://abdullin.com/schema-guided-reasoning/
+.PHONY: sgr
+sgr: sgr/ollama sgr/openrouter sgr/google
