@@ -29,6 +29,18 @@ class OllamaAPI(OpenAICompatibleAPI):
     def completion_params(self, config: GenerateConfig, tools: bool) -> dict[str, Any]:
         params = super().completion_params(config, tools)
 
+        if config.response_schema is not None:
+            schema = config.response_schema.json_schema.model_dump(exclude_none=True)
+            if config.response_schema.description and "description" not in schema:
+                schema = {
+                    **schema,
+                    "description": config.response_schema.description,
+                }
+            if config.response_schema.name and "title" not in schema:
+                schema = {**schema, "title": config.response_schema.name}
+            params.pop("response_format", None)
+            params["format"] = schema
+
         # Ollama uses `"reasoning": { "effort": _ }`
         # instead of `"reasoning_effort": _`
         # https://github.com/ollama/ollama/blob/f2e9c9aff5f59b21a5d9a9668408732b3de01e20/openai/openai.go#L105
