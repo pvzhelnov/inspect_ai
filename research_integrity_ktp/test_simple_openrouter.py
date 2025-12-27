@@ -10,6 +10,7 @@ print("=" * 70)
 
 try:
     from inspect_ai import Task, eval, task
+
     print("✓ Imported Task, eval, task")
 except Exception as e:
     print(f"✗ Failed to import: {e}")
@@ -18,6 +19,7 @@ except Exception as e:
 
 try:
     from inspect_ai.dataset import Sample
+
     print("✓ Imported Sample")
 except Exception as e:
     print(f"✗ Failed to import Sample: {e}")
@@ -25,7 +27,8 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    from inspect_ai.model import GenerateConfig, get_model
+    from inspect_ai.model import get_model
+
     print("✓ Imported GenerateConfig, get_model")
 except Exception as e:
     print(f"✗ Failed to import model: {e}")
@@ -49,12 +52,14 @@ print("STEP 3: Create simple task")
 print("=" * 70)
 
 try:
+
     @task
     def simple_task():
         return Task(
             dataset=[Sample(input="Say hello", target="hello")],
             solver=[],
         )
+
     print("✓ Created task")
 except Exception as e:
     print(f"✗ Failed to create task: {e}")
@@ -71,7 +76,7 @@ try:
         simple_task(),
         model=model,
     )
-    print(f"✓ Eval completed successfully")
+    print("✓ Eval completed successfully")
     print(f"   Results: {result}")
 except Exception as e:
     print(f"✗ Eval failed: {e}")

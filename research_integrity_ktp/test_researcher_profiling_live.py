@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Live test for researcher profiling agent with actual OpenRouter API calls.
+
 Logs all outputs to files for review.
 
 Run from repo root:
@@ -278,9 +279,7 @@ def score_orchestrator_decision():
         try:
             from pydantic import ValidationError
 
-            decision = OrchestratorDecision.model_validate_json(
-                state.output.completion
-            )
+            decision = OrchestratorDecision.model_validate_json(state.output.completion)
 
             checks = [
                 decision.rationale != "",
@@ -462,9 +461,7 @@ def test_research_agent_live():
         ),
     )
 
-    print(
-        "\n🚀 Running research agent with Qwen 4B (Free) via OpenRouter..."
-    )
+    print("\n🚀 Running research agent with Qwen 4B (Free) via OpenRouter...")
     print("   Model will generate structured ResearchIterationOutput")
     print("   Timeout: 60 seconds")
 
@@ -474,16 +471,14 @@ def test_research_agent_live():
         model_args={"provider": {"require_parameters": True}},
     )[0]
 
-    # Save outputs
-    output_dir = save_output_to_file(log, "research_agent")
+    # # Save outputs
+    # output_dir = save_output_to_file(log, "research_agent")
 
     # Display results
-    print(f"\n📊 Results:")
+    print("\n📊 Results:")
     print(f"   - Status: {log.status}")
     print(f"   - Accuracy: {log.results.scores[0].metrics['accuracy'].value}")
-    print(
-        f"   - Stderr: {log.results.scores[0].metrics['stderr'].value}"
-    )
+    print(f"   - Stderr: {log.results.scores[0].metrics['stderr'].value}")
 
     # Parse and display the structured output
     if log.samples and log.samples[0].output:
@@ -491,20 +486,14 @@ def test_research_agent_live():
             output = ResearchIterationOutput.model_validate_json(
                 log.samples[0].output.completion
             )
-            print(f"\n✅ Structured Output Validation: PASSED")
-            print(f"\n📝 Research Iteration Summary:")
+            print("\n✅ Structured Output Validation: PASSED")
+            print("\n📝 Research Iteration Summary:")
             print(
                 f"   - Selected Location: {output.step_3_location_selection.selected_location}"
             )
-            print(
-                f"   - Language: {output.step_4_language_selection.language_name}"
-            )
-            print(
-                f"   - Target URL: {output.step_5_web_search.target_url}"
-            )
-            print(
-                f"   - Pages Visited: {len(output.step_7_browsing.pages_visited)}"
-            )
+            print(f"   - Language: {output.step_4_language_selection.language_name}")
+            print(f"   - Target URL: {output.step_5_web_search.target_url}")
+            print(f"   - Pages Visited: {len(output.step_7_browsing.pages_visited)}")
             print(
                 f"   - Publications Found: {len(output.step_8_extracted_data.publications)}"
             )
@@ -512,17 +501,13 @@ def test_research_agent_live():
                 f"   - Affiliations: {', '.join(output.step_8_extracted_data.affiliations[:3])}"
             )
             if output.step_8_extracted_data.h_index:
-                print(
-                    f"   - H-index: {output.step_8_extracted_data.h_index}"
-                )
+                print(f"   - H-index: {output.step_8_extracted_data.h_index}")
         except Exception as e:
-            print(f"\n❌ Structured Output Validation: FAILED")
+            print("\n❌ Structured Output Validation: FAILED")
             print(f"   Error: {e}")
 
     assert log.status == "success", f"Expected success but got {log.status}"
-    assert (
-        log.results.scores[0].metrics["accuracy"].value > 0
-    ), "Expected accuracy > 0"
+    assert log.results.scores[0].metrics["accuracy"].value > 0, "Expected accuracy > 0"
 
     return log
 
@@ -541,9 +526,7 @@ def test_orchestrator_agent_live():
         ),
     )
 
-    print(
-        "\n🚀 Running orchestrator agent with Qwen 4B (Free) via OpenRouter..."
-    )
+    print("\n🚀 Running orchestrator agent with Qwen 4B (Free) via OpenRouter...")
     print("   Model will make decision about continuing research")
     print("   Timeout: 30 seconds")
 
@@ -553,16 +536,14 @@ def test_orchestrator_agent_live():
         model_args={"provider": {"require_parameters": True}},
     )[0]
 
-    # Save outputs
-    output_dir = save_output_to_file(log, "orchestrator_agent")
+    # # Save outputs
+    # output_dir = save_output_to_file(log, "orchestrator_agent")
 
     # Display results
-    print(f"\n📊 Results:")
+    print("\n📊 Results:")
     print(f"   - Status: {log.status}")
     print(f"   - Accuracy: {log.results.scores[0].metrics['accuracy'].value}")
-    print(
-        f"   - Stderr: {log.results.scores[0].metrics['stderr'].value}"
-    )
+    print(f"   - Stderr: {log.results.scores[0].metrics['stderr'].value}")
 
     # Parse and display the structured output
     if log.samples and log.samples[0].output:
@@ -570,29 +551,21 @@ def test_orchestrator_agent_live():
             output = OrchestratorDecision.model_validate_json(
                 log.samples[0].output.completion
             )
-            print(f"\n✅ Structured Output Validation: PASSED")
-            print(f"\n🎯 Orchestrator Decision:")
-            print(
-                f"   - Continue Research: {output.continue_research}"
-            )
+            print("\n✅ Structured Output Validation: PASSED")
+            print("\n🎯 Orchestrator Decision:")
+            print(f"   - Continue Research: {output.continue_research}")
             print(
                 f"   - Completeness Score: {output.assessment.completeness_score:.2%}"
             )
-            print(
-                f"   - Filled Fields: {len(output.assessment.filled_fields)}"
-            )
-            print(
-                f"   - Missing Fields: {len(output.assessment.missing_fields)}"
-            )
+            print(f"   - Filled Fields: {len(output.assessment.filled_fields)}")
+            print(f"   - Missing Fields: {len(output.assessment.missing_fields)}")
             print(f"   - Rationale: {output.rationale[:200]}...")
         except Exception as e:
-            print(f"\n❌ Structured Output Validation: FAILED")
+            print("\n❌ Structured Output Validation: FAILED")
             print(f"   Error: {e}")
 
     assert log.status == "success", f"Expected success but got {log.status}"
-    assert (
-        log.results.scores[0].metrics["accuracy"].value > 0
-    ), "Expected accuracy > 0"
+    assert log.results.scores[0].metrics["accuracy"].value > 0, "Expected accuracy > 0"
 
     return log
 

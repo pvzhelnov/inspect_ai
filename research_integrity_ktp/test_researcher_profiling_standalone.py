@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+
 """
 Standalone test for researcher profiling agent system using MockLLM.
+
 This script can be run without pytest to verify the implementation.
 Run from repo root: python test_researcher_profiling_standalone.py
 """
@@ -287,9 +289,7 @@ def score_orchestrator_decision():
         try:
             from pydantic import ValidationError
 
-            decision = OrchestratorDecision.model_validate_json(
-                state.output.completion
-            )
+            decision = OrchestratorDecision.model_validate_json(state.output.completion)
 
             # Validate decision is well-formed
             checks = [
@@ -498,16 +498,12 @@ def test_research_agent_with_mockllm():
     assert log.status == "success", f"Task failed with status: {log.status}"
     # The scorer should validate the structured output
     accuracy = log.results.scores[0].metrics["accuracy"].value
-    assert (
-        accuracy == 1.0
-    ), f"Expected accuracy 1.0 but got {accuracy}"
+    assert accuracy == 1.0, f"Expected accuracy 1.0 but got {accuracy}"
 
     print("✅ Research Agent test PASSED")
     print(f"   - Task status: {log.status}")
     print(f"   - Accuracy: {accuracy}")
-    print(
-        f"   - Output length: {len(log.samples[0].output.completion)} chars"
-    )
+    print(f"   - Output length: {len(log.samples[0].output.completion)} chars")
 
 
 def test_orchestrator_agent_with_mockllm():
@@ -552,26 +548,22 @@ def test_orchestrator_agent_with_mockllm():
     assert log.status == "success", f"Task failed with status: {log.status}"
     # Verify the decision was validated correctly
     accuracy = log.results.scores[0].metrics["accuracy"].value
-    assert (
-        accuracy == 1.0
-    ), f"Expected accuracy 1.0 but got {accuracy}"
+    assert accuracy == 1.0, f"Expected accuracy 1.0 but got {accuracy}"
 
     # Parse the output to verify structure
     output = json.loads(log.samples[0].output.completion)
-    assert (
-        output["continue_research"] is False
-    ), f"Expected continue_research=False but got {output['continue_research']}"
-    assert (
-        output["assessment"]["completeness_score"] == 0.85
-    ), f"Expected completeness_score=0.85 but got {output['assessment']['completeness_score']}"
+    assert output["continue_research"] is False, (
+        f"Expected continue_research=False but got {output['continue_research']}"
+    )
+    assert output["assessment"]["completeness_score"] == 0.85, (
+        f"Expected completeness_score=0.85 but got {output['assessment']['completeness_score']}"
+    )
 
     print("✅ Orchestrator Agent test PASSED")
     print(f"   - Task status: {log.status}")
     print(f"   - Accuracy: {accuracy}")
     print(f"   - Continue research: {output['continue_research']}")
-    print(
-        f"   - Completeness score: {output['assessment']['completeness_score']}"
-    )
+    print(f"   - Completeness score: {output['assessment']['completeness_score']}")
 
 
 def test_research_iteration_validation():
@@ -604,9 +596,9 @@ def test_research_iteration_validation():
     assert log.status == "success", "Task should complete"
     # ...but the scorer should mark it as incorrect
     accuracy = log.results.scores[0].metrics["accuracy"].value
-    assert (
-        accuracy == 0.0
-    ), f"Expected accuracy 0.0 for invalid schema but got {accuracy}"
+    assert accuracy == 0.0, (
+        f"Expected accuracy 0.0 for invalid schema but got {accuracy}"
+    )
 
     print("✅ Schema Validation test PASSED")
     print(f"   - Task status: {log.status}")

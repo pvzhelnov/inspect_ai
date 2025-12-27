@@ -2,8 +2,14 @@
 """Quick test to verify OpenRouter API connection."""
 
 import asyncio
-from inspect_ai.model import get_model, GenerateConfig
+
+from dotenv import load_dotenv
+
+from inspect_ai.model import GenerateConfig, get_model
 from inspect_ai.model._chat_message import ChatMessageUser
+
+load_dotenv()
+
 
 async def test_connection():
     """Test basic OpenRouter connection."""
@@ -32,6 +38,7 @@ async def test_connection():
     print("✅ OpenRouter connection successful!")
 
     return result
+
 
 if __name__ == "__main__":
     asyncio.run(test_connection())

@@ -6,12 +6,14 @@ from inspect_ai.dataset import Sample
 from inspect_ai.model import get_model
 from inspect_ai.solver import generate
 
+
 @task
 def task_with_generate():
     return Task(
         dataset=[Sample(input="Say hello in 3 words", target="hello world there")],
         solver=generate(),
     )
+
 
 print("Testing with generate() solver...")
 model = get_model("openrouter/qwen/qwen3-4b:free")
