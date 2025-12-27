@@ -1,17 +1,14 @@
+#!/usr/bin/env python3
 """
-Researcher Profiling Agent System
-
-This module implements a multi-agent system for deep research on highly cited scientists.
-The system consists of:
-1. Research Agent: Performs structured research iterations with web search and browsing
-2. Orchestrator Agent: Manages the research loop and decides when profiling is complete
+Standalone test for researcher profiling agent system using MockLLM.
+This script can be run without pytest to verify the implementation.
+Run from repo root: python test_researcher_profiling_standalone.py
 """
 
 import json
+import sys
 
-import pytest
-from pydantic import BaseModel, Field, ValidationError
-from test_helpers.utils import force_runapi, skip_if_no_openrouter
+from pydantic import BaseModel, Field
 
 from inspect_ai import Task, eval, task
 from inspect_ai.dataset import Sample
@@ -25,15 +22,11 @@ from inspect_ai.scorer import (
     scorer,
     stderr,
 )
-from inspect_ai.solver import TaskState, generate, use_tools
-from inspect_ai.tool import web_browser, web_search
+from inspect_ai.solver import TaskState, generate
 from inspect_ai.util import json_schema
 
-# ============================================================================
-# Research Agent Schemas
-# ============================================================================
 
-
+# Copy schemas from test file
 class ResearcherReflection(BaseModel):
     """Reflection on the researcher's current data state."""
 
@@ -200,11 +193,6 @@ class ResearchIterationOutput(BaseModel):
     )
 
 
-# ============================================================================
-# Orchestrator Agent Schemas
-# ============================================================================
-
-
 class ProfileCompletenessAssessment(BaseModel):
     """Assessment of researcher profile completeness."""
 
@@ -241,44 +229,15 @@ class OrchestratorDecision(BaseModel):
     )
 
 
-# ============================================================================
-# Validated Model for Ground Truth
-# ============================================================================
-
-
-class ValidatedResearcherProfile(BaseModel):
-    """Manually curated ground truth for researcher profile."""
-
-    researcher_name: str
-    verified_publications_count: int = Field(
-        ..., description="Verified number of publications"
-    )
-    verified_citation_count: int | None = Field(
-        default=None, description="Verified citation count"
-    )
-    verified_h_index: int | None = Field(default=None, description="Verified h-index")
-    verified_affiliations: list[str] = Field(
-        default_factory=list, description="Verified affiliations"
-    )
-    verified_research_areas: list[str] = Field(
-        default_factory=list, description="Verified research areas"
-    )
-    key_achievements: list[str] = Field(
-        default_factory=list, description="Key achievements to verify"
-    )
-
-
-# ============================================================================
 # Scorers
-# ============================================================================
-
-
 @scorer(metrics=[accuracy(), stderr()])
 def score_research_iteration():
     """Score a research iteration output."""
 
     async def score(state: TaskState, target: Target) -> Score:
         try:
+            from pydantic import ValidationError
+
             # Parse the structured output
             iteration_output = ResearchIterationOutput.model_validate_json(
                 state.output.completion
@@ -326,7 +285,11 @@ def score_orchestrator_decision():
 
     async def score(state: TaskState, target: Target) -> Score:
         try:
-            decision = OrchestratorDecision.model_validate_json(state.output.completion)
+            from pydantic import ValidationError
+
+            decision = OrchestratorDecision.model_validate_json(
+                state.output.completion
+            )
 
             # Validate decision is well-formed
             checks = [
@@ -355,11 +318,7 @@ def score_orchestrator_decision():
     return score
 
 
-# ============================================================================
 # Tasks
-# ============================================================================
-
-
 @task
 def research_agent_single_iteration():
     """Single iteration of the research agent."""
@@ -390,55 +349,6 @@ Provide your response as a structured JSON output following the ResearchIteratio
             )
         ],
         solver=generate(),
-        scorer=score_research_iteration(),
-        config=GenerateConfig(
-            response_schema=ResponseSchema(
-                name="ResearchIterationOutput",
-                json_schema=json_schema(ResearchIterationOutput),
-                description=ResearchIterationOutput.__doc__,
-                strict=True,
-            ),
-            max_tokens=8192,
-        ),
-    )
-
-
-@task
-def research_agent_with_tools():
-    """Research agent with actual web_search and web_browser tools."""
-    return Task(
-        dataset=[
-            Sample(
-                input="""You are a research profiling agent with web search and browsing capabilities.
-
-Research Dr. Yann LeCun, a highly cited AI researcher.
-
-This is iteration 1. Previous iterations: none.
-
-Current known information:
-- Name: Yann LeCun
-- Field: Computer Science, AI
-- Known for: Convolutional Neural Networks
-
-Your task:
-1. Use web_search to find information about Dr. Yann LeCun
-2. Reflect on the search results
-3. Select the most promising URL from the search results
-4. Formulate a strategy for what information to extract
-5. Document your findings
-
-Note: The web_search tool will automatically log ALL search results to the Inspect AI log.
-The web_browser tool will save FULL PAGE content to the log.
-
-After gathering information, provide a structured response following the ResearchIterationOutput schema,
-describing what you found and what you would extract from the pages.""",
-                target="",
-            )
-        ],
-        solver=[
-            use_tools([web_search(providers="google"), *web_browser()]),
-            generate(),
-        ],
         scorer=score_research_iteration(),
         config=GenerateConfig(
             response_schema=ResponseSchema(
@@ -493,156 +403,10 @@ Provide your response as a structured JSON output following the OrchestratorDeci
     )
 
 
-# ============================================================================
-# Tests
-# ============================================================================
-
-
-def eval_researcher_profiling(task_fn, model):
-    """Helper to evaluate researcher profiling tasks."""
-    model_args = {"provider": {"require_parameters": True}}
-    log = eval(task_fn, model=model, model_args=model_args)[0]
-    assert log.status == "success"
-    return log
-
-
-@force_runapi
-@skip_if_no_openrouter
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "openrouter/qwen/qwen3-235b-a22b:free",
-        "openrouter/anthropic/claude-3.5-sonnet",
-    ],
-)
-def test_research_agent_iteration(model_name: str):
-    """Test a single research agent iteration with structured output."""
-    model = get_model(
-        model_name,
-        config=GenerateConfig(
-            max_tokens=8192,
-        ),
-    )
-    log = eval_researcher_profiling(research_agent_single_iteration(), model)
-    # Check that we got a valid structured response
-    assert log.results.scores[0].metrics["accuracy"].value >= 0.0
-
-
-@force_runapi
-@skip_if_no_openrouter
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "openrouter/anthropic/claude-3.5-sonnet",
-    ],
-)
-def test_research_agent_with_tools(model_name: str):
-    """Test research agent with actual web_search and web_browser tools."""
-    model = get_model(
-        model_name,
-        config=GenerateConfig(
-            max_tokens=8192,
-        ),
-    )
-    log = eval_researcher_profiling(research_agent_with_tools(), model)
-    # Check that we got a valid structured response
-    assert log.results.scores[0].metrics["accuracy"].value >= 0.0
-    # Verify that tool calls were made and logged
-    # The log should contain web_search results and web_browser interactions
-
-
-@force_runapi
-@skip_if_no_openrouter
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "openrouter/qwen/qwen3-235b-a22b:free",
-        "openrouter/anthropic/claude-3.5-sonnet",
-    ],
-)
-def test_orchestrator_agent(model_name: str):
-    """Test the orchestrator agent decision-making with structured output."""
-    model = get_model(
-        model_name,
-        config=GenerateConfig(
-            max_tokens=4096,
-        ),
-    )
-    log = eval_researcher_profiling(orchestrator_agent_task(), model)
-    # Check that we got a valid structured response
-    assert log.results.scores[0].metrics["accuracy"].value >= 0.0
-
-
-# ============================================================================
-# Integration Test with Full Loop
-# ============================================================================
-
-
-@task
-def full_researcher_profiling_loop():
-    """Full researcher profiling loop with orchestrator managing iterations."""
-    return Task(
-        dataset=[
-            Sample(
-                input="""You are orchestrating a researcher profiling system for Dr. Yann LeCun.
-
-Initial information:
-- Name: Yann LeCun
-- Field: Computer Science, AI
-- Known for: Convolutional Neural Networks
-
-Simulate 3 iterations of the research agent, where each iteration:
-1. The research agent performs structured research (following the ResearchIterationOutput schema)
-2. After each iteration, you (as orchestrator) assess completeness using the OrchestratorDecision schema
-3. You decide whether to continue or stop
-
-Describe this process and provide a final OrchestratorDecision indicating the research is complete.
-
-Provide your final decision as structured JSON following the OrchestratorDecision schema.""",
-                target="",
-            )
-        ],
-        solver=generate(),
-        scorer=score_orchestrator_decision(),
-        config=GenerateConfig(
-            response_schema=ResponseSchema(
-                name="OrchestratorDecision",
-                json_schema=json_schema(OrchestratorDecision),
-                description=OrchestratorDecision.__doc__,
-                strict=True,
-            ),
-            max_tokens=8192,
-        ),
-    )
-
-
-@force_runapi
-@skip_if_no_openrouter
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        "openrouter/qwen/qwen3-235b-a22b:free",
-    ],
-)
-def test_full_profiling_loop(model_name: str):
-    """Test the full researcher profiling loop with orchestrator."""
-    model = get_model(
-        model_name,
-        config=GenerateConfig(
-            max_tokens=8192,
-        ),
-    )
-    log = eval_researcher_profiling(full_researcher_profiling_loop(), model)
-    assert log.results.scores[0].metrics["accuracy"].value >= 0.0
-
-
-# ============================================================================
-# Mock LLM Tests (for testing without API calls)
-# ============================================================================
-
-
 def test_research_agent_with_mockllm():
     """Test research agent with MockLLM to verify schema validation."""
+    print("Testing Research Agent with MockLLM...")
+
     # Create a valid ResearchIterationOutput
     mock_output = ResearchIterationOutput(
         step_1_reflection=ResearcherReflection(
@@ -731,13 +495,25 @@ def test_research_agent_with_mockllm():
         model=model,
     )[0]
 
-    assert log.status == "success"
+    assert log.status == "success", f"Task failed with status: {log.status}"
     # The scorer should validate the structured output
-    assert log.results.scores[0].metrics["accuracy"].value == 1.0
+    accuracy = log.results.scores[0].metrics["accuracy"].value
+    assert (
+        accuracy == 1.0
+    ), f"Expected accuracy 1.0 but got {accuracy}"
+
+    print("✅ Research Agent test PASSED")
+    print(f"   - Task status: {log.status}")
+    print(f"   - Accuracy: {accuracy}")
+    print(
+        f"   - Output length: {len(log.samples[0].output.completion)} chars"
+    )
 
 
 def test_orchestrator_agent_with_mockllm():
     """Test orchestrator agent with MockLLM to verify decision schema."""
+    print("\nTesting Orchestrator Agent with MockLLM...")
+
     # Create a valid OrchestratorDecision
     mock_decision = OrchestratorDecision(
         continue_research=False,
@@ -773,18 +549,35 @@ def test_orchestrator_agent_with_mockllm():
         model=model,
     )[0]
 
-    assert log.status == "success"
+    assert log.status == "success", f"Task failed with status: {log.status}"
     # Verify the decision was validated correctly
-    assert log.results.scores[0].metrics["accuracy"].value == 1.0
+    accuracy = log.results.scores[0].metrics["accuracy"].value
+    assert (
+        accuracy == 1.0
+    ), f"Expected accuracy 1.0 but got {accuracy}"
 
     # Parse the output to verify structure
     output = json.loads(log.samples[0].output.completion)
-    assert output["continue_research"] is False
-    assert output["assessment"]["completeness_score"] == 0.85
+    assert (
+        output["continue_research"] is False
+    ), f"Expected continue_research=False but got {output['continue_research']}"
+    assert (
+        output["assessment"]["completeness_score"] == 0.85
+    ), f"Expected completeness_score=0.85 but got {output['assessment']['completeness_score']}"
+
+    print("✅ Orchestrator Agent test PASSED")
+    print(f"   - Task status: {log.status}")
+    print(f"   - Accuracy: {accuracy}")
+    print(f"   - Continue research: {output['continue_research']}")
+    print(
+        f"   - Completeness score: {output['assessment']['completeness_score']}"
+    )
 
 
 def test_research_iteration_validation():
     """Test that invalid schema outputs are rejected."""
+    print("\nTesting Schema Validation (invalid output)...")
+
     # Create an invalid output (missing required fields)
     invalid_json = json.dumps(
         {
@@ -808,6 +601,39 @@ def test_research_iteration_validation():
     )[0]
 
     # Should fail because of invalid schema
-    assert log.status == "success"  # Task completes but...
-    # ...the scorer should mark it as incorrect
-    assert log.results.scores[0].metrics["accuracy"].value == 0.0
+    assert log.status == "success", "Task should complete"
+    # ...but the scorer should mark it as incorrect
+    accuracy = log.results.scores[0].metrics["accuracy"].value
+    assert (
+        accuracy == 0.0
+    ), f"Expected accuracy 0.0 for invalid schema but got {accuracy}"
+
+    print("✅ Schema Validation test PASSED")
+    print(f"   - Task status: {log.status}")
+    print(f"   - Accuracy: {accuracy} (correctly rejected invalid schema)")
+
+
+if __name__ == "__main__":
+    try:
+        print("=" * 70)
+        print("RESEARCHER PROFILING AGENT SYSTEM - STANDALONE TEST")
+        print("=" * 70)
+
+        test_research_agent_with_mockllm()
+        test_orchestrator_agent_with_mockllm()
+        test_research_iteration_validation()
+
+        print("\n" + "=" * 70)
+        print("ALL TESTS PASSED! ✅")
+        print("=" * 70)
+        sys.exit(0)
+
+    except AssertionError as e:
+        print(f"\n❌ TEST FAILED: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ ERROR: {e}")
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
