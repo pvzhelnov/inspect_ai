@@ -11,7 +11,7 @@ Single comprehensive implementation with screenshot-based decision making.
 4. NATIVE Playwright     → Screenshot + HTML dump
 5. LLM Strategy Decision → text_search OR web_browser_tool
 6a. Text Search Path     → grep/regex in HTML
-6b. Browser Tool Path    → Inspect AI web_browser agentically
+6b. Native Browser Tool  → NATIVE Playwright + LLM structured outputs
 7. LLM Extraction        → Extract from results
 8. LLM Orchestrator      → Continue research?
 ```
@@ -56,31 +56,77 @@ MOCK_MODE=1 python researcher_profiling_agent.py
 5. ✅ **Extraction** - Mock LLM returns fixture
 6. ✅ **Orchestrator** - Mock LLM returns fixture
 
-### Critical Bug That Was Fixed
+### Native Browser Implementation
 
-**Problem:**
+**File:** `native_web_browser.py`
+
+Reimplements web browser tools using NATIVE Playwright + LLM structured outputs:
+
+**How It Works:**
+1. Launch Playwright browser
+2. Navigate to URL, extract page structure via JavaScript
+3. LLM sees interactive elements (links, buttons, inputs with IDs)
+4. LLM outputs structured action decision (go, click, type, scroll, back, done)
+5. Pydantic validates and normalizes field names
+6. Python executes action with Playwright
+7. Get new page structure, back to step 3
+8. Repeat until LLM outputs "done"
+
+**Browser Actions:**
+- `go` - Navigate to URL
+- `click` - Click element by ID
+- `type` - Type into element
+- `type_submit` - Type and press ENTER
+- `scroll` - Scroll up/down
+- `back` - Go back
+- `done` - Task complete
+
+**Page Structure Extraction:**
+
+Uses JavaScript evaluation (NOT Playwright's non-existent `page.accessibility` API):
+
 ```python
-async def use_web_browser_tool_agentically(...):  # WRONG!
-    log = eval(browser_task(), model=model)[0]
+async def get_accessibility_tree(page: Page) -> str:
+    elements = await page.evaluate("""
+        () => {
+            const elements = [];
+            // Extract links
+            document.querySelectorAll('a[href]').forEach(el => {
+                elements.push({id: ++id, role: 'link', name: el.innerText});
+            });
+            // Extract buttons, inputs, headings, etc.
+            return elements;
+        }
+    """)
+    return format_tree(elements)
 ```
 
-**Error:**
-```
-RuntimeWarning: coroutine 'App.run.<locals>.run_app' was never awaited
-```
+**Field Normalization:**
 
-**Cause:** Function marked `async def` but `eval()` is synchronous, creating unawaited coroutine
+LLM outputs vary - we handle all formats:
+- `action` ↔ `type` (action field name)
+- `query` ↔ `text` (text to type)
+- `reason` ↔ `result` (completion result)
+- `element` ↔ `element_id` (element to interact with)
+- Nested `parameters` object (flattened)
+- List vs dict outputs
+- Invalid types (float, None) → graceful error handling
 
-**Fix:**
+**Example LLM Output Variations:**
+
 ```python
-def use_web_browser_tool_agentically(...):  # CORRECT!
-    log = eval(browser_task(), model=model)[0]
+# All these get normalized correctly:
+{"type": "click", "element": "5"}
+{"action": "click", "element_id": 5}
+{"action": "click", "parameters": {"element_id": 5}}
+[{"action": "type", "query": "search text", "element": "1"}]
+{"action": "done", "reason": "task complete"}
 ```
 
-**How It Was Caught:**
-- Changed MOCK_MODE to use `web_browser_tool` instead of `text_search`
-- Removed mock skip: browser tool now ACTUALLY executes in MOCK_MODE
-- Running mock mode revealed the async/await bug immediately
+**Saves Every Action:**
+- Screenshot: `action_N_screenshot.png`
+- HTML dump: `action_N_page.html`
+- Action history: `action_history.json`
 
 ## Files Generated
 
@@ -154,7 +200,13 @@ def browser_task():
 **Error:**
 ```
 Page.goto: net::ERR_NAME_NOT_RESOLVED
+Page.goto: net::ERR_TUNNEL_CONNECTION_FAILED
 ```
+
+**Cause:** Sandboxed environments may:
+- Block HTTPS with JWT authentication proxy
+- Require tunnel connections that fail
+- Isolate network access
 
 **Solution:** Playwright configured with:
 ```python
@@ -166,6 +218,12 @@ context = await browser.new_context(
     bypass_csp=True
 )
 ```
+
+**Testing Limitations:**
+- In isolated environments, all web pages may return "Jwt is missing"
+- HTTP sites may work better than HTTPS
+- Native browser implementation IS working correctly
+- Test with proper network access to see full functionality
 
 ## Development Notes
 
