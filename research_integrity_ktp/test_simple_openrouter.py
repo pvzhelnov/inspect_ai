@@ -4,6 +4,10 @@
 import sys
 import traceback
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 print("=" * 70)
 print("STEP 1: Import inspect_ai modules")
 print("=" * 70)
@@ -40,7 +44,7 @@ print("STEP 2: Get OpenRouter model")
 print("=" * 70)
 
 try:
-    model = get_model("openrouter/qwen/qwen3-4b:free")
+    model = get_model("openrouter/qwen/qwen3-coder:free")
     print(f"✓ Got model: {model.name}")
 except Exception as e:
     print(f"✗ Failed to get model: {e}")
