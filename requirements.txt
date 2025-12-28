@@ -20,6 +20,7 @@ mmh3>3.1.0
 nest_asyncio2
 numpy
 platformdirs>=2.3.0
+playwright>=1.40.0
 psutil
 pydantic>=2.11.4
 python-dotenv>=0.16.0
@@ -29,6 +30,7 @@ s3fs>=2023
 semver>=3.0.0
 shortuuid
 sniffio
+tavily-python>=0.7.0
 tenacity
 textual>=2.1.0
 typing_extensions>=4.9.0
