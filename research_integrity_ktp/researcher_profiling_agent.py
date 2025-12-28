@@ -43,8 +43,22 @@ from inspect_ai.util import json_schema
 
 load_dotenv()
 
-# Storage
-STORAGE = Path("logs/researcher_profiling")
+# Auto-detect environment and use appropriate config
+WORKDIR = os.getcwd()
+IS_AICODE_ENV = "/home/aicode/" in WORKDIR
+
+if IS_AICODE_ENV:
+    # User's custom config for /home/aicode/ environment
+    STORAGE = Path("inspect_ai/research_integrity_ktp/test_logs/researcher_profiling")
+    DEFAULT_MODEL = "openai-api/llama-cpp/google/gemma-3-4b-it-qat-q4_0-gguf"
+    print(f"[CONFIG] Detected /home/aicode/ environment")
+    print(f"[CONFIG] Using storage: {STORAGE}")
+    print(f"[CONFIG] Using model: {DEFAULT_MODEL}")
+else:
+    # Default config for other environments
+    STORAGE = Path("logs/researcher_profiling")
+    DEFAULT_MODEL = "openrouter/qwen/qwen3-coder:free"
+
 STORAGE.mkdir(parents=True, exist_ok=True)
 
 # Mock mode flag
@@ -432,7 +446,7 @@ def run_pipeline():
         print("(MOCK MODE - Using fixture responses)")
     print("=" * 70)
 
-    model = get_model("openrouter/qwen/qwen3-coder:free")
+    model = get_model(DEFAULT_MODEL)
     solver_fn = mock_generate() if MOCK_MODE else generate()
 
     # STEP 1: Planning

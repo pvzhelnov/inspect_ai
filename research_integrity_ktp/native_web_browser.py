@@ -51,13 +51,31 @@ from inspect_ai.util import json_schema
 async def get_accessibility_tree(page: Page) -> str:
     """
     Extract accessibility tree from Playwright page using JavaScript evaluation.
-    Returns a text representation similar to Inspect AI's web_browser tool.
+    Returns ONLY VISIBLE elements - critical for scroll to work!
     """
-    # Use JavaScript to extract interactive elements
+    # Use JavaScript to extract VISIBLE interactive elements
     elements = await page.evaluate("""
         () => {
             const elements = [];
             let id = 1;
+
+            // Helper to check if element is visible in viewport
+            function isVisible(el) {
+                const rect = el.getBoundingClientRect();
+                const windowHeight = window.innerHeight || document.documentElement.clientHeight;
+                const windowWidth = window.innerWidth || document.documentElement.clientWidth;
+
+                // Check if element is in viewport
+                const vertInView = (rect.top <= windowHeight) && ((rect.top + rect.height) >= 0);
+                const horInView = (rect.left <= windowWidth) && ((rect.left + rect.width) >= 0);
+
+                // Check if element has size and is not hidden
+                const hasSize = rect.width > 0 && rect.height > 0;
+                const notHidden = window.getComputedStyle(el).visibility !== 'hidden' &&
+                                  window.getComputedStyle(el).display !== 'none';
+
+                return vertInView && horInView && hasSize && notHidden;
+            }
 
             // Helper to get visible text
             function getVisibleText(el) {
@@ -65,70 +83,73 @@ async def get_accessibility_tree(page: Page) -> str:
                 return text.trim().slice(0, 100);  // Limit length
             }
 
-            // Helper to get element role
-            function getRole(el) {
-                const role = el.getAttribute('role');
-                if (role) return role;
-                return el.tagName.toLowerCase();
-            }
-
-            // Extract links
+            // Extract links (ONLY VISIBLE ONES!)
             document.querySelectorAll('a[href]').forEach(el => {
-                const text = getVisibleText(el);
-                if (text) {
-                    elements.push({
-                        id: id++,
-                        role: 'link',
-                        name: text,
-                        href: el.href
-                    });
+                if (isVisible(el)) {
+                    const text = getVisibleText(el);
+                    if (text) {
+                        elements.push({
+                            id: id++,
+                            role: 'link',
+                            name: text,
+                            href: el.href
+                        });
+                    }
                 }
             });
 
-            // Extract buttons
+            // Extract buttons (ONLY VISIBLE!)
             document.querySelectorAll('button, input[type="button"], input[type="submit"]').forEach(el => {
-                const text = getVisibleText(el) || el.value || el.getAttribute('aria-label') || '';
-                if (text) {
-                    elements.push({
-                        id: id++,
-                        role: 'button',
-                        name: text
-                    });
+                if (isVisible(el)) {
+                    const text = getVisibleText(el) || el.value || el.getAttribute('aria-label') || '';
+                    if (text) {
+                        elements.push({
+                            id: id++,
+                            role: 'button',
+                            name: text
+                        });
+                    }
                 }
             });
 
-            // Extract input fields
+            // Extract input fields (ONLY VISIBLE!)
             document.querySelectorAll('input:not([type="button"]):not([type="submit"]), textarea').forEach(el => {
-                const label = el.getAttribute('aria-label') || el.placeholder || el.name || '';
-                elements.push({
-                    id: id++,
-                    role: 'input',
-                    name: label,
-                    type: el.type || 'text',
-                    value: el.value || ''
-                });
-            });
-
-            // Extract headings
-            document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
-                const text = getVisibleText(el);
-                if (text) {
+                if (isVisible(el)) {
+                    const label = el.getAttribute('aria-label') || el.placeholder || el.name || '';
                     elements.push({
                         id: id++,
-                        role: el.tagName.toLowerCase(),
-                        name: text
+                        role: 'input',
+                        name: label,
+                        type: el.type || 'text',
+                        value: el.value || ''
                     });
                 }
             });
 
-            // Extract select elements
+            // Extract headings (ONLY VISIBLE!)
+            document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
+                if (isVisible(el)) {
+                    const text = getVisibleText(el);
+                    if (text) {
+                        elements.push({
+                            id: id++,
+                            role: el.tagName.toLowerCase(),
+                            name: text
+                        });
+                    }
+                }
+            });
+
+            // Extract select elements (ONLY VISIBLE!)
             document.querySelectorAll('select').forEach(el => {
-                const label = el.getAttribute('aria-label') || el.name || '';
-                elements.push({
-                    id: id++,
-                    role: 'select',
-                    name: label
-                });
+                if (isVisible(el)) {
+                    const label = el.getAttribute('aria-label') || el.name || '';
+                    elements.push({
+                        id: id++,
+                        role: 'select',
+                        name: label
+                    });
+                }
             });
 
             return elements;
@@ -330,6 +351,12 @@ class BrowserSession:
                 await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
             else:
                 await self.page.evaluate("window.scrollBy(0, -window.innerHeight)")
+            # CRITICAL: Wait for lazy-loaded content after scroll!
+            await asyncio.sleep(1.0)  # Give time for content to load
+            try:
+                await self.page.wait_for_load_state('domcontentloaded', timeout=2000)
+            except:
+                pass
 
         elif action.action == "back":
             await self.page.go_back()
