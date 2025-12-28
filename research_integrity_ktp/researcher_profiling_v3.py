@@ -143,6 +143,8 @@ Decide:
 2. What search query to use
 3. Rationale for this approach"""
 
+        # Clear any initial messages from Sample to avoid user→user pattern
+        state.messages.clear()
         state.messages.append(ChatMessageUser(content=prompt))
 
         # Call generate with response_schema as keyword argument
