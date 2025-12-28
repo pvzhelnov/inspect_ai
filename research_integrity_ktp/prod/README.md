@@ -88,7 +88,7 @@ python research_integrity_ktp/prod/scripts/run_batch.py \
     --input research_integrity_ktp/prod/test_data/samples.jsonl \
     --db-path research_integrity_ktp/prod/test_data/researcher_profiles.db \
     --batch-name batch_001 \
-    --workers 4 \
+    --workers 1 \
     --model openai-api/llama-cpp/google/gemma-3-4b-it-qat-q4_0-gguf \
     --max-iterations 5
 ```
