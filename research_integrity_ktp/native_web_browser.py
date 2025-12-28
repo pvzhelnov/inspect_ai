@@ -495,6 +495,11 @@ Choose your next action."""
                     break
                 decision_json = decision_json[0]
 
+            # Flatten if LLM nested parameters inside "parameters" field
+            if "parameters" in decision_json and isinstance(decision_json["parameters"], dict):
+                params = decision_json.pop("parameters")
+                decision_json.update(params)
+
             # Parse action - handle both "action" and "type" field names
             action_type = decision_json.get("action") or decision_json.get("type")
 
@@ -509,6 +514,15 @@ Choose your next action."""
             # Normalize "reason" to "result" for done actions
             if action_type == "done" and "reason" in decision_json:
                 decision_json["result"] = decision_json.pop("reason")
+
+            # Normalize "element" to "element_id" for click/type actions
+            if "element" in decision_json and "element_id" not in decision_json:
+                element_val = decision_json.pop("element")
+                # Try to convert to int if it's a string number
+                try:
+                    decision_json["element_id"] = int(element_val)
+                except (ValueError, TypeError):
+                    decision_json["element_id"] = element_val
 
             if action_type == "done":
                 action = BrowserAction_Done(**decision_json)
