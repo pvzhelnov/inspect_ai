@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Test with generate() solver to isolate the issue."""
 
+from dotenv import load_dotenv
+
 from inspect_ai import Task, eval, task
 from inspect_ai.dataset import Sample
 from inspect_ai.model import get_model
 from inspect_ai.solver import generate
+
+load_dotenv()
 
 
 @task
