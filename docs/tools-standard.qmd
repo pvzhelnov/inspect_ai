@@ -11,7 +11,7 @@ tbl-colwidths: [40,60]
 
 The `web_search()` tool provides models the ability to enhance their context window by performing a search. Web searches are executed using a provider. Providers are split into two categories:
 
--   Internal providers: `"openai"`, `"anthropic"`, `"gemini"`, `"grok"`, and `"perplexity"` - these use the model's built-in search capability and do not require separate API keys. These work only for their respective model provider (e.g. the "openai" search provider works only for `openai/*` models).
+-   Internal providers: `"openai"`, `"anthropic"`, `"gemini"`, `"grok"`, `"mistral"`, and `"perplexity"` - these use the model's built-in search capability and do not require separate API keys. These work only for their respective model provider (e.g. the "openai" search provider works only for `openai/*` models).
 
 -   External providers: `"tavily"`, `"exa"`, and `"google"`. These are external services that work with any model and require separate accounts and API keys. Note that "google" is different from "gemini" - "google" refers to Google's Programmable Search Engine service, while "gemini" refers to Google's built-in search capability for Gemini models.
 
@@ -29,7 +29,7 @@ web_search("tavily")
 web_search(["openai", "tavily"])
 
 # multiple internal providers and fallback
-web_search(["openai", "anthropic", "gemini", "perplexity", "tavily"])
+web_search(["openai", "anthropic", "gemini", "mistral", "tavily"])
 
 # provider with specific options
 web_search({"tavily": {"max_results": 5}})
@@ -422,15 +422,6 @@ inspect eval computer.py --no-internal-tools
 
 ## Code Execution {#sec-code-execution}
 
-::: callout-note
-The code execution tool described below is available only in the development version of Inspect. To install the development version from GitHub:
-
-``` bash
-pip install git+https://github.com/UKGovernmentBEIS/inspect_ai
-```
-:::
-
-
 ### Overview
 
 The `code_execution()` tool provides models with the ability to execute Python code within a sandboxed environment. There are two significant differences between code execution and the `python()` tool described above:
@@ -452,7 +443,7 @@ from inspect_ai.tool import code_execution
 def code_execution_task():
     return Task(
         dataset=[Sample("Add 435678 + 23457")],
-        solver=react(tools=[code_execution())
+        solver=react(tools=[code_execution()])
     )
 ```
 
@@ -488,183 +479,6 @@ code_interpreter(
 
 When falling back to the `python()` provider you should ensure that your `Task` has a `sandbox` with access to Python enabled.
 
-## Memory {#sec-memory}
-
-The memory tool enables models to store and retrieve information into a `/memories` file directory. Models can create, read, update, and delete files, enabling them to preserve knowledge over time without keeping everything in the context window.
-
-### Task Setup
-
-A task configured to use the memory tool might look like this:
-
-``` python
-from inspect_ai import Task, task
-from inspect_ai.scorer import includes
-from inspect_ai.solver import generate, system_message, use_tools
-from inspect_ai.tool import bash, memory
-
-@task
-def intercode_ctf():
-    return Task(
-        dataset=read_dataset(),
-        solver=[
-            system_message("system.txt"),
-            use_tools([bash(timeout=180), memory()]),
-            generate(),
-        ],
-        scorer=includes(),
-        sandbox=("docker", "compose.yaml")
-    )
-```
-
-### Seeding Memories
-
-You can seed the memories from sample data by passing `initial_data` to the `memory()` tool. For example:
-
-``` python
-memory(
-    initial_data = {
-        "/memories/notes.md": "<text or file path>",
-        "/memories/theories.md": "<text or file path>"
-    }
-)
-```
-
-Keys should be valid `/memories` paths (e.g. "/memories/notes.md"). Values are resolved via `resource()`, supporting inline strings, file paths, or remote resources (s3://, https://). Seeding happens once on first tool execution. The model is prompted to read any pre-seeded memories before beginning work.
-
-### Tool Binding
-
-The schema for the `memory()` tool is based on the standard Anthropic [memory tool type](hhttps://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool). The `memory()` works with all models that support tool calling, but when using Claude, the text editor tool will automatically bind to the native Claude tool definition.
-
-## Think {#sec-think}
-
-The `think()` tool provides models with the ability to include an additional thinking step as part of getting to its final answer.
-
-Note that the `think()` tool is not a substitute for reasoning and extended thinking, but rather an an alternate way of letting models express thinking that is better suited to some tool use scenarios.
-
-### Usage
-
-You should read the original [think tool article](https://www.anthropic.com/engineering/claude-think-tool) in its entirely to understand where and where not to use the think tool. In summary, good contexts for the think tool include:
-
-1.  Tool output analysis. When models need to carefully process the output of previous tool calls before acting and might need to backtrack in its approach;
-2.  Policy-heavy environments. When models need to follow detailed guidelines and verify compliance; and
-3.  Sequential decision making. When each action builds on previous ones and mistakes are costly (often found in multi-step domains).
-
-Use the `think()` tool alongside other tools like this:
-
-``` python
-from inspect_ai import Task, task
-from inspect_ai.scorer import includes
-from inspect_ai.solver import generate, system_message, use_tools
-from inspect_ai.tool import bash_session, text_editor, think
-
-@task
-def intercode_ctf():
-    return Task(
-        dataset=read_dataset(),
-        solver=[
-            system_message("system.txt"),
-            use_tools([
-                bash_session(timeout=180),
-                text_editor(timeout=180),
-                think()
-            ]),
-            generate(),
-        ],
-        scorer=includes(),
-        sandbox=("docker", "compose.yaml")
-    )
-```
-
-### Tool Description
-
-In the original [think tool article]((https://www.anthropic.com/engineering/claude-think-tool)) (which was based on experimenting with Claude) they found that providing clear instructions on when and how to use the `think()` tool for the particular problem domain it is being used within could sometimes be helpful. For example, here's the prompt they used with SWE-Bench:
-
-``` python
-from textwrap import dedent
-
-from inspect_ai import Task, task
-from inspect_ai.scorer import includes
-from inspect_ai.solver import generate, system_message, use_tools
-from inspect_ai.tool import bash_session, text_editor, think
-
-@task
-def swe_bench():
-
-    tools = [
-        bash_session(timeout=180),
-        text_editor(timeout=180),  
-        think(dedent("""
-            Use the think tool to think about something. It will not obtain
-            new information or make any changes to the repository, but just 
-            log the thought. Use it when complex reasoning or brainstorming
-            is needed. For example, if you explore the repo and discover
-            the source of a bug, call this tool to brainstorm several unique
-            ways of fixing the bug, and assess which change(s) are likely to 
-            be simplest and most effective. Alternatively, if you receive
-            some test results, call this tool to brainstorm ways to fix the
-            failing tests.
-        """))
-    ])
-
-    return Task(
-        dataset=read_dataset(),
-        solver=[
-            system_message("system.txt"),
-            use_tools(tools),
-            generate(),
-        ),
-        scorer=includes(),
-        sandbox=("docker", "compose.yaml")
-    )
-```
-
-### System Prompt
-
-In the article they also found that when tool instructions are long and/or complex, including instructions about the `think()` tool in the system prompt can be more effective than placing them in the tool description itself.
-
-Here's an example of moving the custom `think()` prompt into the system prompt (note that this was *not* done in the article's SWE-Bench experiment, this is merely an example):
-
-``` python
-from textwrap import dedent
-
-from inspect_ai import Task, task
-from inspect_ai.scorer import includes
-from inspect_ai.solver import generate, system_message, use_tools
-from inspect_ai.tool import bash_session, text_editor, think
-
-@task
-def swe_bench():
-
-    think_system_message = system_message(dedent("""
-        Use the think tool to think about something. It will not obtain
-        new information or make any changes to the repository, but just 
-        log the thought. Use it when complex reasoning or brainstorming
-        is needed. For example, if you explore the repo and discover
-        the source of a bug, call this tool to brainstorm several unique
-        ways of fixing the bug, and assess which change(s) are likely to 
-        be simplest and most effective. Alternatively, if you receive
-        some test results, call this tool to brainstorm ways to fix the
-        failing tests.
-    """))
-
-    return Task(
-        dataset=read_dataset(),
-        solver=[
-            system_message("system.txt"),
-            think_system_message,
-            use_tools([
-                bash_session(timeout=180),
-                text_editor(timeout=180),  
-                think(),
-            ]),
-            generate(),
-        ],
-        scorer=includes(),
-        sandbox=("docker", "compose.yaml")
-    )
-```
-
-Note that the effectivess of using the system prompt will vary considerably across tasks, tools, and models, so should definitely be the subject of experimentation.
 
 ## Web Browser {#sec-web-browser}
 
@@ -756,3 +570,250 @@ use_tools(web_browser(interactive=False))
 ```
 
 In this mode, the interactive tools (`web_browser_click()`, `web_browser_type()`, and `web_browser_type_submit()`) are not made available to the model.
+
+## Skill {#sec-skill}
+
+The `skill()` tool provides models with [agent skills](https://agentskills.io/home) which are folders of instructions, scripts, and resources that agents can discover and use to do things more accurately and efficiently.
+
+Skills were originally created as a feature of Claude Code, but are now widely supported by many agents and agent frameworks. You can learn more about creating skills at:
+
+- [Agent Skills Specification](https://agentskills.io/specification)
+- [Claude Code Agent Skills](https://code.claude.com/docs/en/skills)
+- [Codex CLI Agent Skills](https://developers.openai.com/codex/skills/)
+
+The `skill()` tool takes a list of paths that contain standard skill specifications, copies them into the sample's sandbox, and provides a tool description that enumerates the available skills. For example, here we make available "system-info" and "network-info" skills:
+
+``` python
+from inspect_ai import Task, task
+from inspect_ai.scorer import includes
+from inspect_ai.agent import react
+from inspect_ai.tool import bash, skill, update_plan
+
+SKILLS_DIR = Path(__file__).parent / "skills"
+
+@task
+def intercode_ctf():
+
+    # define skill tool
+    skill_tool = skill(
+        [
+            SKILLS_DIR / "system-info",
+            SKILLS_DIR / "network-info",
+        ]
+    )
+
+    return Task(
+        dataset=read_dataset(),
+        solver=react(tools=[bash(timeout=180), skill_tool]),
+        scorer=includes(),
+        sandbox=("docker", "compose.yaml")
+    )
+```
+
+Note that use of the `skill()` tool requires a that a [sandbox](sandboxing.qmd) be defined for the task so there is a filesystem to publish the skills within.
+
+## Update Plan {#sec-update-plan}
+
+The `update_plan()` tool provides models with a way to track steps and progress in longer horizon tasks where it might otherwise lose track of where it is or forget earlier goals as context grows. It can also make agent behavior more interpretable, since you can inspect the plan to understand what the model thinks it's trying to accomplish.
+
+Note though that for simpler tasks, plan maintenance is just overhead, and some models may fixate on updating the plan rather than actually executing it.
+
+### Task Setup
+
+A task configured to use the update_plan tool might look like this:
+
+``` python
+from inspect_ai import Task, task
+from inspect_ai.scorer import includes
+from inspect_ai.agent import react
+from inspect_ai.tool import bash, update_plan
+
+@task
+def intercode_ctf():
+    return Task(
+        dataset=read_dataset(),
+        solver=react(tools=[bash(timeout=180), update_plan()]),
+        scorer=includes(),
+        sandbox=("docker", "compose.yaml")
+    )
+```
+
+The update_plan tool is based on the update_plan tool used by [Codex CLI](https://github.com/openai/codex). The default tool description is taken from the GPT 5.1 system prompt for Codex. Pass a custom `description` to override this.
+
+## Memory {#sec-memory}
+
+The memory tool enables models to store and retrieve information into a `/memories` file directory. Models can create, read, update, and delete files, enabling them to preserve knowledge over time without keeping everything in the context window.
+
+### Task Setup
+
+A task configured to use the memory tool might look like this:
+
+``` python
+from inspect_ai import Task, task
+from inspect_ai.scorer import includes
+from inspect_ai.agent import react
+from inspect_ai.tool import bash, memory
+
+@task
+def intercode_ctf():
+    return Task(
+        dataset=read_dataset(),
+        solver=[
+            system_message("system.txt"),
+            react(tools=[bash(timeout=180), memory()]),
+        ],
+        scorer=includes(),
+        sandbox=("docker", "compose.yaml")
+    )
+```
+
+
+### Seeding Memories
+
+You can seed the memories from sample data by passing `initial_data` to the `memory()` tool. For example:
+
+``` python
+memory(
+    initial_data = {
+        "/memories/notes.md": "<text or file path>",
+        "/memories/theories.md": "<text or file path>"
+    }
+)
+```
+
+Keys should be valid `/memories` paths (e.g. "/memories/notes.md"). Values are resolved via `resource()`, supporting inline strings, file paths, or remote resources (s3://, https://). Seeding happens once on first tool execution. The model is prompted to read any pre-seeded memories before beginning work.
+
+### Tool Binding
+
+The schema for the `memory()` tool is based on the standard Anthropic [memory tool type](hhttps://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool). The `memory()` works with all models that support tool calling, but when using Claude, the text editor tool will automatically bind to the native Claude tool definition.
+
+## Think {#sec-think}
+
+The `think()` tool provides models with the ability to include an additional thinking step as part of getting to its final answer.
+
+Note that the `think()` tool is not a substitute for reasoning and extended thinking, but rather an an alternate way of letting models express thinking that is better suited to some tool use scenarios.
+
+### Usage
+
+You should read the original [think tool article](https://www.anthropic.com/engineering/claude-think-tool) in its entirely to understand where and where not to use the think tool. In summary, good contexts for the think tool include:
+
+1.  Tool output analysis. When models need to carefully process the output of previous tool calls before acting and might need to backtrack in its approach;
+2.  Policy-heavy environments. When models need to follow detailed guidelines and verify compliance; and
+3.  Sequential decision making. When each action builds on previous ones and mistakes are costly (often found in multi-step domains).
+
+Use the `think()` tool alongside other tools like this:
+
+``` python
+from inspect_ai import Task, task
+from inspect_ai.scorer import includes
+from inspect_ai.solver import generate, system_message, use_tools
+from inspect_ai.tool import bash_session, text_editor, think
+
+@task
+def intercode_ctf():
+    return Task(
+        dataset=read_dataset(),
+        solver=[
+            system_message("system.txt"),
+            use_tools([
+                bash_session(timeout=180),
+                text_editor(timeout=180),
+                think()
+            ]),
+            generate(),
+        ],
+        scorer=includes(),
+        sandbox=("docker", "compose.yaml")
+    )
+```
+
+### Tool Description
+
+In the original [think tool article](https://www.anthropic.com/engineering/claude-think-tool) (which was based on experimenting with Claude) they found that providing clear instructions on when and how to use the `think()` tool for the particular problem domain it is being used within could sometimes be helpful. For example, here's the prompt they used with SWE-Bench:
+
+``` python
+from textwrap import dedent
+
+from inspect_ai import Task, task
+from inspect_ai.scorer import includes
+from inspect_ai.solver import generate, system_message, use_tools
+from inspect_ai.tool import bash_session, text_editor, think
+
+@task
+def swe_bench():
+
+    tools = [
+        bash_session(timeout=180),
+        text_editor(timeout=180),  
+        think(dedent("""
+            Use the think tool to think about something. It will not obtain
+            new information or make any changes to the repository, but just 
+            log the thought. Use it when complex reasoning or brainstorming
+            is needed. For example, if you explore the repo and discover
+            the source of a bug, call this tool to brainstorm several unique
+            ways of fixing the bug, and assess which change(s) are likely to 
+            be simplest and most effective. Alternatively, if you receive
+            some test results, call this tool to brainstorm ways to fix the
+            failing tests.
+        """))
+    ])
+
+    return Task(
+        dataset=read_dataset(),
+        solver=[
+            system_message("system.txt"),
+            use_tools(tools),
+            generate(),
+        ),
+        scorer=includes(),
+        sandbox=("docker", "compose.yaml")
+    )
+```
+
+### System Prompt
+
+In the article they also found that when tool instructions are long and/or complex, including instructions about the `think()` tool in the system prompt can be more effective than placing them in the tool description itself.
+
+Here's an example of moving the custom `think()` prompt into the system prompt (note that this was *not* done in the article's SWE-Bench experiment, this is merely an example):
+
+``` python
+from textwrap import dedent
+
+from inspect_ai import Task, task
+from inspect_ai.scorer import includes
+from inspect_ai.solver import generate, system_message, use_tools
+from inspect_ai.tool import bash_session, text_editor, think
+
+@task
+def swe_bench():
+
+    think_system_message = system_message(dedent("""
+        Use the think tool to think about something. It will not obtain
+        new information or make any changes to the repository, but just 
+        log the thought. Use it when complex reasoning or brainstorming
+        is needed. For example, if you explore the repo and discover
+        the source of a bug, call this tool to brainstorm several unique
+        ways of fixing the bug, and assess which change(s) are likely to 
+        be simplest and most effective. Alternatively, if you receive
+        some test results, call this tool to brainstorm ways to fix the
+        failing tests.
+    """))
+
+    return Task(
+        dataset=read_dataset(),
+        solver=[
+            system_message("system.txt"),
+            think_system_message,
+            use_tools([
+                bash_session(timeout=180),
+                text_editor(timeout=180),  
+                think(),
+            ]),
+            generate(),
+        ],
+        scorer=includes(),
+        sandbox=("docker", "compose.yaml")
+    )
+```
+
+Note that the effectivess of using the system prompt will vary considerably across tasks, tools, and models, so should definitely be the subject of experimentation.

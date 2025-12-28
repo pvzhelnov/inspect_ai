@@ -1,6 +1,7 @@
 import json
 import logging
 import urllib.parse
+from io import BytesIO
 from logging import getLogger
 from pathlib import Path
 from typing import Any, Protocol
@@ -25,6 +26,7 @@ from inspect_ai._display.core.active import display
 from inspect_ai._eval.evalset import read_eval_set_info
 from inspect_ai._util.constants import DEFAULT_SERVER_HOST, DEFAULT_VIEW_PORT
 from inspect_ai._util.file import filesystem
+from inspect_ai._util.local_server import get_machine_ip
 from inspect_ai._view import notify
 from inspect_ai._view.common import (
     delete_log,
@@ -140,12 +142,55 @@ def view_server_app(
     ) -> Response:
         file = normalize_uri(log)
         await _validate_read(request, file)
-        response = await stream_log_bytes(await _map_file(request, file), start, end)
+        mapped_file = await _map_file(request, file)
+
+        # Get actual file size to ensure Content-Length is accurate
+        file_size = await get_log_size(mapped_file)
+
+        # Clamp end to actual file size to prevent Content-Length mismatch
+        actual_end = min(end, file_size - 1)
+        actual_content_length = actual_end - start + 1
+
+        response = await stream_log_bytes(mapped_file, start, actual_end)
         return StreamingResponse(
             content=response,
-            headers={"Content-Length": str(end - start + 1)},
+            headers={"Content-Length": str(actual_content_length)},
             media_type="application/octet-stream",
         )
+
+    @app.get("/log-download/{log:path}")
+    async def api_log_download(
+        request: Request,
+        log: str,
+    ) -> Response:
+        file = normalize_uri(log)
+        await _validate_read(request, file)
+
+        mapped_file = await _map_file(request, file)
+
+        file_size = await get_log_size(mapped_file)
+        stream = await stream_log_bytes(mapped_file)
+
+        base_name = Path(file).stem
+        filename = f"{base_name}.eval"
+
+        headers = {
+            "Content-Length": str(file_size),
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        }
+
+        if isinstance(stream, BytesIO):
+            return Response(
+                content=stream.getvalue(),
+                headers=headers,
+                media_type="application/octet-stream",
+            )
+        else:
+            return StreamingResponse(
+                content=stream,
+                headers=headers,
+                media_type="application/octet-stream",
+            )
 
     @app.get("/log-dir")
     async def api_log_dir(
@@ -439,9 +484,13 @@ def view_server(
         async def announce_when_ready() -> None:
             while not server.started:
                 await anyio.sleep(0.05)
-            # Print this for compatibility with the Inspect VSCode plugin:
+
+            # Only show machine IP when binding to 0.0.0.0 (accessible from all interfaces)
+            machine_ip = host
+            if host == "0.0.0.0":
+                machine_ip = get_machine_ip() or "0.0.0.0"
             display().print(
-                f"======== Running on http://{host}:{port} ========\n"
+                f"======== Running on http://{machine_ip}:{port} ========\n"
                 "(Press CTRL+C to quit)"
             )
 

@@ -85,12 +85,16 @@ website:
           href: reference/inspect_ai.tool.qmd#computer
         - text: code_execution
           href: reference/inspect_ai.tool.qmd#code_execution
-        - text: memory
-          href: reference/inspect_ai.tool.qmd#memory
-        - text: think
-          href: reference/inspect_ai.tool.qmd#think
         - text: web_browser
           href: reference/inspect_ai.tool.qmd#web_browser
+        - text: skill
+          href: reference/inspect_ai.tool.qmd#skill
+        - text: memory
+          href: reference/inspect_ai.tool.qmd#memory
+        - text: update_plan
+          href: reference/inspect_ai.tool.qmd#update_plan
+        - text: think
+          href: reference/inspect_ai.tool.qmd#think
         - text: mcp_connection
           href: reference/inspect_ai.tool.qmd#mcp_connection
         - text: mcp_server_stdio
@@ -111,6 +115,16 @@ website:
           href: reference/inspect_ai.tool.qmd#mcpserverconfigstdio
         - text: 'MCPServerConfigHTTP '
           href: 'reference/inspect_ai.tool.qmd#mcpserverconfighttp '
+        - text: skill
+          href: reference/inspect_ai.tool.qmd#skill
+        - text: read_skills
+          href: reference/inspect_ai.tool.qmd#read_skills
+        - text: install_skills
+          href: reference/inspect_ai.tool.qmd#install_skills
+        - text: Skill
+          href: reference/inspect_ai.tool.qmd#skill
+        - text: SkillInfo
+          href: reference/inspect_ai.tool.qmd#skillinfo
         - text: tool_with
           href: reference/inspect_ai.tool.qmd#tool_with
         - text: ToolDef
@@ -164,6 +178,8 @@ website:
           href: reference/inspect_ai.agent.qmd#sandbox_agent_bridge
         - text: SandboxAgentBridge
           href: reference/inspect_ai.agent.qmd#sandboxagentbridge
+        - text: BridgedToolsSpec
+          href: reference/inspect_ai.agent.qmd#bridgedtoolsspec
         - text: content_only
           href: reference/inspect_ai.agent.qmd#content_only
         - text: last_message
@@ -435,8 +451,6 @@ website:
           href: reference/inspect_ai.log.qmd#read_eval_log_samples
         - text: read_eval_log_sample_summaries
           href: reference/inspect_ai.log.qmd#read_eval_log_sample_summaries
-        - text: edit_score
-          href: reference/inspect_ai.log.qmd#edit_score
         - text: recompute_metrics
           href: reference/inspect_ai.log.qmd#recompute_metrics
         - text: convert_eval_logs
@@ -449,6 +463,14 @@ website:
           href: reference/inspect_ai.log.qmd#retryable_eval_logs
         - text: EvalLogInfo
           href: reference/inspect_ai.log.qmd#evalloginfo
+        - text: edit_score
+          href: reference/inspect_ai.log.qmd#edit_score
+        - text: invalidate_samples
+          href: reference/inspect_ai.log.qmd#invalidate_samples
+        - text: uninvalidate_samples
+          href: reference/inspect_ai.log.qmd#uninvalidate_samples
+        - text: ProvenanceData
+          href: reference/inspect_ai.log.qmd#provenancedata
         - text: EvalLog
           href: reference/inspect_ai.log.qmd#evallog
         - text: EvalSpec
@@ -702,6 +724,12 @@ website:
           href: reference/inspect_ai.util.qmd#jsonschema
         - text: json_schema
           href: reference/inspect_ai.util.qmd#json_schema
+        - text: EarlyStopping
+          href: reference/inspect_ai.util.qmd#earlystopping
+        - text: EarlyStoppingSummary
+          href: reference/inspect_ai.util.qmd#earlystoppingsummary
+        - text: EarlyStop
+          href: reference/inspect_ai.util.qmd#earlystop
       - section: inspect_ai.hooks
         href: reference/inspect_ai.hooks.qmd
         contents:

@@ -45,8 +45,6 @@ from mistralai.models.chatcompletionresponse import (
 from shortuuid import uuid
 from typing_extensions import override
 
-# TODO: Migration guide:
-# https://github.com/mistralai/client-python/blob/main/MIGRATION.md
 from inspect_ai._util.constants import NO_CONTENT
 from inspect_ai._util.content import (
     Content,
@@ -74,12 +72,23 @@ from .._model_output import (
     ModelUsage,
     StopReason,
 )
-from .util import environment_prerequisite_error, model_base_url
+from .mistral_conversation import (
+    mistral_conversation_generate,
+)
+from .util import (
+    environment_prerequisite_error,
+    model_base_url,
+    require_azure_base_url,
+    resolve_api_key,
+)
 from .util.hooks import HttpxHooks
 
 AZURE_MISTRAL_API_KEY = "AZURE_MISTRAL_API_KEY"
 AZUREAI_MISTRAL_API_KEY = "AZUREAI_MISTRAL_API_KEY"
 MISTRAL_API_KEY = "MISTRAL_API_KEY"
+
+
+AZURE_MISTRAL_BASE_URL_VARS = ["AZUREAI_MISTRAL_BASE_URL", "AZURE_MISTRAL_BASE_URL"]
 
 
 class MistralAPI(ModelAPI):
@@ -89,6 +98,7 @@ class MistralAPI(ModelAPI):
         base_url: str | None = None,
         api_key: str | None = None,
         config: GenerateConfig = GenerateConfig(),
+        conversation_api: bool | None = None,
         **model_args: Any,
     ):
         # extract any service prefix from model name
@@ -110,11 +120,19 @@ class MistralAPI(ModelAPI):
             config=config,
         )
 
+        # track use of conversation api
+        if conversation_api is not None:
+            self.conversation_api = conversation_api
+        elif "voxtral" in model_name:  # no audio in conversation api
+            self.conversation_api = False
+        else:
+            self.conversation_api = True
+
         # resolve api_key
         if not self.api_key:
             if self.is_azure():
-                self.api_key = os.environ.get(
-                    AZUREAI_MISTRAL_API_KEY, os.environ.get(AZURE_MISTRAL_API_KEY, None)
+                self.api_key = resolve_api_key(
+                    [AZUREAI_MISTRAL_API_KEY, AZURE_MISTRAL_API_KEY]
                 )
             else:
                 self.api_key = os.environ.get(MISTRAL_API_KEY, None)
@@ -126,12 +144,9 @@ class MistralAPI(ModelAPI):
 
         if not self.base_url:
             if self.is_azure():
-                self.base_url = model_base_url(base_url, "AZUREAI_MISTRAL_BASE_URL")
-                if not self.base_url:
-                    raise ValueError(
-                        "You must provide a base URL when using Mistral on Azure. Use the AZUREAI_MISTRAL_BASE_URL "
-                        + " environment variable or the --model-base-url CLI flag to set the base URL."
-                    )
+                self.base_url = require_azure_base_url(
+                    self.base_url, AZURE_MISTRAL_BASE_URL_VARS, "Mistral"
+                )
             else:
                 self.base_url = model_base_url(base_url, "MISTRAL_BASE_URL")
 
@@ -154,6 +169,19 @@ class MistralAPI(ModelAPI):
         with Mistral(api_key=self.api_key, **self.model_args) as client:
             # create time tracker
             http_hooks = HttpxHooks(client.sdk_configuration.async_client)
+
+            # use the conversation api if requested
+            if self.conversation_api:
+                return await mistral_conversation_generate(
+                    client=client,
+                    http_hooks=http_hooks,
+                    model=self.service_model_name(),
+                    input=input,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    config=config,
+                    handle_bad_request=self.handle_bad_request,
+                )
 
             # build request
             request_id = http_hooks.start_request()
@@ -236,6 +264,10 @@ class MistralAPI(ModelAPI):
                 ),
             ), model_call()
 
+    @override
+    def emulate_reasoning_history(self) -> bool:
+        return False
+
     def service_model_name(self) -> str:
         """Model name without any service prefix."""
         return self.model_name.replace(f"{self.service}/", "", 1)
@@ -265,7 +297,8 @@ class MistralAPI(ModelAPI):
     def handle_bad_request(self, ex: SDKError) -> ModelOutput | Exception:
         body = json.loads(ex.body)
         content = body.get("message", ex.body)
-        if "maximum context length" in ex.body:
+        body_lower = ex.body.lower()
+        if "maximum context length" in body_lower or "input too large" in body_lower:
             return ModelOutput.from_content(
                 model=self.service_model_name(),
                 content=content,

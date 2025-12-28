@@ -1470,6 +1470,93 @@
       "type": "object",
       "additionalProperties": false
     },
+    "EarlyStop": {
+      "description": "Directive to stop a sample early.",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Id"
+        },
+        "epoch": {
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metadata"
+        }
+      },
+      "required": [
+        "id",
+        "epoch",
+        "reason",
+        "metadata"
+      ],
+      "title": "EarlyStop",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "EarlyStoppingSummary": {
+      "description": "Summary of early stopping applied to task.",
+      "properties": {
+        "manager": {
+          "title": "Manager",
+          "type": "string"
+        },
+        "early_stops": {
+          "items": {
+            "$ref": "#/$defs/EarlyStop"
+          },
+          "title": "Early Stops",
+          "type": "array"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "manager",
+        "early_stops",
+        "metadata"
+      ],
+      "title": "EarlyStoppingSummary",
+      "type": "object",
+      "additionalProperties": false
+    },
     "ErrorEvent": {
       "description": "Event with sample error.",
       "properties": {
@@ -2175,6 +2262,8 @@
             "internal_tools": null,
             "max_tool_output": null,
             "cache_prompt": null,
+            "verbosity": null,
+            "effort": null,
             "reasoning_effort": null,
             "reasoning_tokens": null,
             "reasoning_summary": null,
@@ -2207,11 +2296,17 @@
           "additionalProperties": true,
           "title": "Params",
           "type": "object"
+        },
+        "params_passed": {
+          "additionalProperties": true,
+          "title": "Params Passed",
+          "type": "object"
         }
       },
       "required": [
         "solver",
-        "params"
+        "params",
+        "params_passed"
       ],
       "title": "EvalPlanStep",
       "type": "object",
@@ -2229,6 +2324,17 @@
           "default": 0,
           "title": "Completed Samples",
           "type": "integer"
+        },
+        "early_stopping": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EarlyStoppingSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "scores": {
           "default": [],
@@ -2257,6 +2363,7 @@
       "required": [
         "total_samples",
         "completed_samples",
+        "early_stopping",
         "scores",
         "metadata"
       ],
@@ -2530,6 +2637,30 @@
           "title": "Model Usage",
           "type": "object"
         },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
         "total_time": {
           "anyOf": [
             {
@@ -2565,6 +2696,17 @@
           ],
           "default": null,
           "title": "Uuid"
+        },
+        "invalidation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProvenanceData"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "error": {
           "anyOf": [
@@ -2627,9 +2769,12 @@
         "store",
         "events",
         "model_usage",
+        "started_at",
+        "completed_at",
         "total_time",
         "working_time",
         "uuid",
+        "invalidation",
         "error",
         "error_retries",
         "attachments",
@@ -3127,6 +3272,19 @@
           "default": null,
           "title": "Solver Args"
         },
+        "solver_args_passed": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Solver Args Passed"
+        },
         "tags": {
           "anyOf": [
             {
@@ -3298,6 +3456,7 @@
         "task_args_passed",
         "solver",
         "solver_args",
+        "solver_args_passed",
         "tags",
         "dataset",
         "sandbox",
@@ -3638,6 +3797,40 @@
           "default": null,
           "title": "Cache Prompt"
         },
+        "verbosity": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Verbosity"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effort"
+        },
         "reasoning_effort": {
           "anyOf": [
             {
@@ -3646,7 +3839,8 @@
                 "minimal",
                 "low",
                 "medium",
-                "high"
+                "high",
+                "xhigh"
               ],
               "type": "string"
             },
@@ -3788,6 +3982,8 @@
         "internal_tools",
         "max_tool_output",
         "cache_prompt",
+        "verbosity",
+        "effort",
         "reasoning_effort",
         "reasoning_tokens",
         "reasoning_summary",
@@ -4004,6 +4200,21 @@
                 "null"
               ],
               "type": "string"
+            },
+            {
+              "items": {
+                "enum": [
+                  "string",
+                  "integer",
+                  "number",
+                  "boolean",
+                  "array",
+                  "object",
+                  "null"
+                ],
+                "type": "string"
+              },
+              "type": "array"
             },
             {
               "type": "null"
@@ -7455,6 +7666,11 @@
         }
       ],
       "default": null
+    },
+    "invalidated": {
+      "default": false,
+      "title": "Invalidated",
+      "type": "boolean"
     },
     "samples": {
       "anyOf": [

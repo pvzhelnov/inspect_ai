@@ -20,8 +20,14 @@ from inspect_ai._display import display as display_manager
 from inspect_ai._eval.task.log import plan_to_eval_plan
 from inspect_ai._eval.task.run import resolve_plan
 from inspect_ai._util._async import run_coroutine
+from inspect_ai._util.azure import call_with_azure_auth_fallback
 from inspect_ai._util.error import PrerequisiteError
-from inspect_ai._util.file import basename, file, filesystem
+from inspect_ai._util.file import (
+    FileSystem,
+    basename,
+    file,
+    filesystem,
+)
 from inspect_ai._util.json import to_json_safe
 from inspect_ai._util.notgiven import NOT_GIVEN, NotGiven
 from inspect_ai.agent._agent import Agent, is_agent
@@ -32,7 +38,6 @@ from inspect_ai.log._bundle import bundle_log_dir
 from inspect_ai.log._file import (
     EvalLogInfo,
     list_eval_logs,
-    read_eval_log,
     read_eval_log_headers,
     write_log_dir_manifest,
 )
@@ -415,7 +420,11 @@ def eval_set(
         else:
             # look for retryable eval logs and cleave them into success/failed
             success_logs, failed_logs = list_latest_eval_logs(
-                all_logs, epochs, retry_cleanup
+                all_tasks,
+                all_logs,
+                epochs=epochs,
+                limit=limit,
+                cleanup_older=retry_cleanup,
             )
 
             # retry the failed logs (look them up in resolved_tasks)
@@ -525,7 +534,8 @@ def as_previous_tasks(
                 task_args=resolve_task_args(task.task),
                 model=task.model,
                 model_roles=task.model_roles,
-                log=read_eval_log(log.info),
+                log=log.header,
+                log_info=log.info,
             )
         )
 
@@ -536,7 +546,7 @@ def as_previous_tasks(
 
 
 def all_evals_succeeded(logs: list[EvalLog]) -> bool:
-    return all([log.status == "success" for log in logs])
+    return all([log.status == "success" and not log.invalidated for log in logs])
 
 
 # filter for determining when we are done
@@ -569,7 +579,11 @@ def list_all_eval_logs(log_dir: str) -> list[Log]:
 
 # get the latest logs (cleaning if requested). returns tuple of successful/unsuccessful
 def list_latest_eval_logs(
-    logs: list[Log], epochs: int | Epochs | None, cleanup_older: bool
+    all_tasks: list[tuple[str, ResolvedTask]],
+    logs: list[Log],
+    epochs: int | Epochs | None,
+    limit: int | tuple[int, int] | None,
+    cleanup_older: bool,
 ) -> tuple[list[Log], list[Log]]:
     latest_logs = latest_completed_task_eval_logs(
         logs=logs, cleanup_older=cleanup_older
@@ -586,10 +600,49 @@ def list_latest_eval_logs(
             incomplete_logs.append(log)
         elif log.header.status != "success":
             incomplete_logs.append(log)
+        elif log.header.invalidated:
+            incomplete_logs.append(log)
+        elif not log_samples_complete(log, all_tasks, epochs=epochs, limit=limit):
+            incomplete_logs.append(log)
         else:
             complete_logs.append(log)
 
     return (complete_logs, incomplete_logs)
+
+
+def log_samples_complete(
+    log: Log,
+    all_tasks: list[tuple[str, ResolvedTask]],
+    epochs: Epochs | None,
+    limit: int | tuple[int, int] | None,
+) -> bool:
+    if not log.header.results:
+        return False
+    id = task_identifier(log.header, None, None)
+    task = next((task for tid, task in all_tasks if tid == id), None)
+    if not task:
+        # This should not happen since we have already validated prerequisites
+        raise PrerequisiteError(
+            f"[bold]ERROR[/bold]: Could not find task for log '{log.header.location}'."
+        )
+    epochs = epochs or resolve_epochs(task.task.epochs or 1)
+    if epochs_changed(epochs, log.header.eval.config):
+        return False
+    epoch_count = epochs.epochs if epochs else 1
+
+    count = len(task.task.dataset)
+    if isinstance(limit, tuple):
+        start, stop = limit
+        if start >= count:
+            count = 0
+        else:
+            count = min(stop, count) - start
+    elif isinstance(limit, int):
+        count = min(limit, count)
+
+    if log.header.results.total_samples < count * epoch_count:
+        return False
+    return True
 
 
 def epochs_changed(epochs: Epochs | None, config: EvalConfig) -> bool:
@@ -602,6 +655,9 @@ def epochs_changed(epochs: Epochs | None, config: EvalConfig) -> bool:
     # number of epochs differs (changed)
     elif epochs.epochs != config.epochs:
         return True
+    # default to mean reducer should match (not changed)
+    if epochs.reducer is None and config.epochs_reducer == ["mean"]:
+        return False
     # different reducer list (changed)
     elif [r.__name__ for r in (epochs.reducer or [])] != [
         r for r in (config.epochs_reducer or [])
@@ -753,6 +809,19 @@ def task_identifier(
         model_roles = task.eval.model_roles or {}
         model_args = task.eval.model_args
         eval_plan = task.plan
+
+    # strip args from eval_plan as we've changed the way this is serialized
+    # and we want to be compatible with older logs. this effectively uses
+    # 'params_passed' as the basis of comparison as opposed to 'params' which
+    # in newer logs includes the fully resolve params
+    eval_plan = eval_plan.model_copy(
+        update={
+            "finish": None,
+            "steps": [
+                step.model_copy(update={"params": None}) for step in eval_plan.steps
+            ],
+        }
+    )
 
     # hash for task args
     task_args_hash = hashlib.sha256(
@@ -907,7 +976,7 @@ def write_eval_set_info(
 ) -> None:
     # resolve log dir to full path
     fs = filesystem(log_dir)
-    log_dir = fs.info(log_dir).name
+    log_dir = _resolve_log_dir(fs, log_dir)
 
     # get info
     eval_set_info = to_eval_set(eval_set_id, tasks, all_logs, config, eval_set_solver)
@@ -922,15 +991,40 @@ def write_eval_set_info(
 def read_eval_set_info(log_dir: str, fs_options: dict[str, Any] = {}) -> EvalSet | None:
     # resolve log dir to full path
     fs = filesystem(log_dir)
-    log_dir = fs.info(log_dir).name
+    log_dir = _resolve_log_dir(fs, log_dir)
 
     # form target path and read
     manifest = f"{log_dir}{fs.sep}eval-set.json"
-    if not fs.exists(manifest):
+    exists = _manifest_exists(fs, manifest)
+
+    if not exists:
         return None
 
-    with file(manifest, mode="rb", fs_options=fs_options) as f:
-        eval_set_json = f.read()
+    eval_set_json = _read_manifest_bytes(manifest, fs_options)
+    if eval_set_json is None:
+        return None
 
     # parse and return
     return EvalSet.model_validate_json(eval_set_json)
+
+
+def _resolve_log_dir(fs: FileSystem, log_dir: str) -> str:
+    return call_with_azure_auth_fallback(
+        lambda: fs.info(log_dir).name, fallback_return_value=log_dir
+    )
+
+
+def _read_manifest_bytes(manifest: str, fs_options: dict[str, Any]) -> bytes | None:
+    def _read_manifest_bytes_strict() -> bytes:
+        with file(manifest, mode="rb", fs_options=fs_options) as f:
+            return f.read()
+
+    return call_with_azure_auth_fallback(
+        _read_manifest_bytes_strict, fallback_return_value=None
+    )
+
+
+def _manifest_exists(fs: FileSystem, path: str) -> bool:
+    return call_with_azure_auth_fallback(
+        lambda: fs.exists(path), fallback_return_value=False
+    )

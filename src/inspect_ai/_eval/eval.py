@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import sys
@@ -53,6 +54,7 @@ from inspect_ai.model._model import (
     get_model,
     init_active_model,
     init_model_roles,
+    init_model_usage,
     resolve_models,
 )
 from inspect_ai.scorer._reducer import reducer_log_names
@@ -966,7 +968,9 @@ async def eval_retry_async(
                 raise FileNotFoundError(f"Task file '{task_file}' not found")
             task = f"{task_file}@{task_name}"
         else:
-            if registry_lookup("task", task_name) is None:
+            if registry_lookup("task", task_name) is None and not task_name.startswith(
+                "hf/"
+            ):
                 # if this object is in a package then let the user know
                 # that they need to register it to work with eval-retry
                 package_name = registry_package_name(task_name)
@@ -980,7 +984,11 @@ async def eval_retry_async(
 
         # see if there is solver spec in the eval log
         solver = (
-            SolverSpec(eval_log.eval.solver, eval_log.eval.solver_args or {})
+            SolverSpec(
+                eval_log.eval.solver,
+                eval_log.eval.solver_args or {},
+                eval_log.eval.solver_args_passed or {},
+            )
             if eval_log.eval.solver
             else None
         )
@@ -999,6 +1007,7 @@ async def eval_retry_async(
         # collect the rest of the params we need for the eval
         task_args = eval_log.eval.task_args_passed
         tags = eval_log.eval.tags
+        metadata = eval_log.eval.metadata
         limit = eval_log.eval.config.limit
         # try to match log format of retried log
         if log_format is None and eval_log.location:
@@ -1073,6 +1082,15 @@ async def eval_retry_async(
         config.attempt_timeout = attempt_timeout or config.attempt_timeout
         config.max_connections = max_connections or config.max_connections
 
+        # extract previous model usage to continue token counting (make a deep copy to avoid modifying the original log)
+        initial_model_usage = (
+            copy.deepcopy(eval_log.stats.model_usage)
+            if eval_log.stats.model_usage
+            else None
+        )
+        if initial_model_usage:
+            init_model_usage(initial_model_usage)
+
         # run the eval
         log = (
             await eval_async(
@@ -1083,6 +1101,7 @@ async def eval_retry_async(
                     model=None,
                     model_roles=None,
                     log=eval_log,
+                    log_info=None,
                 ),
                 model=model,
                 model_roles=cast(dict[str, str | Model], model_roles),
@@ -1091,6 +1110,7 @@ async def eval_retry_async(
                 sandbox_cleanup=sandbox_cleanup,
                 solver=solver,
                 tags=tags,
+                metadata=metadata,
                 approval=approval,
                 log_level=log_level,
                 log_level_transcript=log_level_transcript,

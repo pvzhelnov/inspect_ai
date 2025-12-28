@@ -7,6 +7,8 @@ from typing import Any, Literal, cast
 import grpc
 from google.protobuf.json_format import MessageToDict
 from pydantic import JsonValue
+from tenacity import wait_exponential_jitter
+from tenacity.wait import WaitBaseT
 from typing_extensions import override
 from xai_sdk import AsyncClient  # type: ignore
 from xai_sdk.chat import (  # type: ignore
@@ -19,7 +21,12 @@ from xai_sdk.chat import (  # type: ignore
     usage_pb2,
     user,
 )
-from xai_sdk.tools import code_execution, get_tool_call_type, web_search  # type: ignore
+from xai_sdk.tools import (  # type: ignore
+    code_execution,
+    get_tool_call_type,
+    mcp,
+    web_search,
+)
 
 from inspect_ai._util.citation import UrlCitation
 from inspect_ai._util.constants import BASE_64_DATA_REMOVED
@@ -45,6 +52,8 @@ from inspect_ai.model._model import ModelAPI
 from inspect_ai.model._model_call import ModelCall
 from inspect_ai.model._model_output import ModelOutput
 from inspect_ai.model._providers.util.util import model_base_url
+from inspect_ai.tool._mcp._config import MCPServerConfigHTTP
+from inspect_ai.tool._mcp._remote import is_mcp_server_tool
 from inspect_ai.tool._tool_call import ToolCall
 from inspect_ai.tool._tool_choice import ToolChoice, ToolFunction
 from inspect_ai.tool._tool_info import ToolInfo
@@ -73,6 +82,8 @@ class GrokAPI(ModelAPI):
         base_url: str | None = None,
         api_key: str | None = None,
         config: GenerateConfig = GenerateConfig(),
+        streaming: bool = False,
+        disable_retry: bool = False,
         **model_args: Any,
     ) -> None:
         super().__init__(
@@ -99,6 +110,18 @@ class GrokAPI(ModelAPI):
         )
 
         # save model args
+        self.streaming = streaming
+        self.disable_retry = disable_retry
+        if self.disable_retry:
+            # retrying may be disabled so we can accurately track waiting time
+            # (challenging to track GRPC internal retries w/o monkey patching).
+            # we also implement a custom retry_wait method which retries a bit
+            # more aggressively (the default is for an outer retry which is is
+            # presumed is only being hit after many internal retries)
+            model_args["channel_options"] = [
+                ("grpc.enable_retries", 0),
+                ("grpc.service_config", "{}"),
+            ]
         self.model_args = model_args
 
         # create client
@@ -185,8 +208,11 @@ class GrokAPI(ModelAPI):
                 )
             # stream the reponse for improved connectivity for long requests
             else:
-                async for chat_response, _ in chat.stream():
-                    pass
+                if self.streaming:
+                    async for chat_response, _ in chat.stream():
+                        pass
+                else:
+                    chat_response = await chat.sample()
 
             # update response
             response = MessageToDict(chat_response._proto)
@@ -221,6 +247,13 @@ class GrokAPI(ModelAPI):
             }
         else:
             return False
+
+    @override
+    def retry_wait(self) -> WaitBaseT | None:
+        if self.disable_retry:
+            return wait_exponential_jitter(max=(30 * 60))
+        else:
+            return None
 
     @override
     def emulate_reasoning_history(self) -> bool:
@@ -265,6 +298,18 @@ class GrokAPI(ModelAPI):
             return web_search(**web_search_options)
         elif self._is_internal_code_execution_tool(tool_info):
             return code_execution()
+        elif is_mcp_server_tool(tool_info):
+            mcp_config = MCPServerConfigHTTP.model_validate(tool_info.options)
+            return mcp(
+                server_url=mcp_config.url,
+                server_label=mcp_config.name,
+                server_description=mcp_config.name,
+                allowed_tool_names=mcp_config.tools
+                if isinstance(mcp_config.tools, list)
+                else None,
+                authorization=mcp_config.authorization_token,
+                extra_headers=mcp_config.headers,
+            )
         else:
             return tool(
                 name=tool_info.name,
@@ -311,7 +356,7 @@ class GrokAPI(ModelAPI):
                     )
                 case "minimal" | "low":
                     gconfig["reasoning_effort"] = "low"
-                case "medium" | "high":
+                case "medium" | "high" | "xhigh":
                     gconfig["reasoning_effort"] = "high"
 
         # return encrypted reasoning blocks

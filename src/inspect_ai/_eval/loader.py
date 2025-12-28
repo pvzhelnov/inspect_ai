@@ -9,7 +9,7 @@ from typing import Any, Callable, Tuple, cast
 from shortuuid import uuid
 
 from inspect_ai._eval.task.resolved import ResolvedTask
-from inspect_ai._eval.task.util import task_file, task_run_dir
+from inspect_ai._eval.task.util import split_spec, task_file, task_run_dir
 from inspect_ai._util.decorator import parse_decorators
 from inspect_ai._util.error import PrerequisiteError
 from inspect_ai._util.logger import warn_once
@@ -27,6 +27,7 @@ from inspect_ai.agent._as_solver import as_solver
 from inspect_ai.model import Model
 from inspect_ai.scorer._scorer import Scorer, ScorerSpec, scorer_create
 from inspect_ai.solver._bridge import bridge
+from inspect_ai.solver._constants import SOLVER_ALL_PARAMS_ATTR
 from inspect_ai.solver._solver import Solver, SolverSpec
 from inspect_ai.util import SandboxEnvironmentSpec, SandboxEnvironmentType
 from inspect_ai.util._sandbox.environment import (
@@ -38,6 +39,7 @@ from .list import task_files
 from .registry import task_create
 from .task import PreviousTask, Task, TaskInfo
 from .task.constants import TASK_FILE_ATTR, TASK_RUN_DIR_ATTR
+from .task.hf import task_create_from_hf
 from .task.run import eval_log_sample_source
 from .task.tasks import Tasks
 
@@ -117,22 +119,13 @@ def resolve_tasks(
             loaded_tasks_args.append(loaded_task_args)
 
         return [
-            ResolvedTask(
-                task=loaded_task,
-                task_args=loaded_task_args,
-                task_file=previous_task.log.eval.task_file,
-                model=previous_task.model or loaded_task.model or model,
-                model_roles=(
-                    previous_task.model_roles or loaded_task.model_roles or model_roles
-                ),
-                sandbox=resolve_task_file_sandbox(
-                    previous_task.log.eval.task_file, previous_task.log.eval.sandbox
-                ),
-                sequence=sequence,
-                id=previous_task.id,
-                sample_source=eval_log_sample_source(
-                    previous_task.log, loaded_task.dataset
-                ),
+            resolve_previous_task(
+                loaded_task,
+                loaded_task_args,
+                model,
+                model_roles,
+                previous_task,
+                sequence,
             )
             for sequence, loaded_task, loaded_task_args, previous_task in zip(
                 range(0, len(loaded_tasks)),
@@ -160,6 +153,33 @@ def resolve_tasks(
 
     # done! let's load the tasks
     return as_resolved_tasks(load_tasks(cast(list[str] | None, tasks), task_args))
+
+
+def resolve_previous_task(
+    loaded_task: Task,
+    loaded_task_args: dict[str, Any],
+    model: Model,
+    model_roles: dict[str, Model] | None,
+    previous_task: PreviousTask,
+    sequence: int,
+) -> ResolvedTask:
+    return ResolvedTask(
+        task=loaded_task,
+        task_args=loaded_task_args,
+        task_file=previous_task.log.eval.task_file,
+        model=previous_task.model or loaded_task.model or model,
+        model_roles=(
+            previous_task.model_roles or loaded_task.model_roles or model_roles
+        ),
+        sandbox=resolve_task_file_sandbox(
+            previous_task.log.eval.task_file, previous_task.log.eval.sandbox
+        ),
+        sequence=sequence,
+        id=previous_task.id,
+        sample_source=eval_log_sample_source(
+            previous_task.log, previous_task.log_info, loaded_task.dataset
+        ),
+    )
 
 
 def resolve_task_args(task: Task) -> dict[str, Any]:
@@ -253,6 +273,9 @@ def load_task_spec(task_spec: str, task_args: dict[str, Any] = {}) -> list[Task]
     if registry_lookup("task", task_spec) is not None:
         # create the task from a python package
         return [task_create(task_spec, **task_args)]
+    elif task_spec.startswith("hf/"):
+        # load task from huggingface
+        return task_create_from_hf(task_spec, **task_args)
     else:
         # load tasks from glob
         return create_tasks([task_spec], task_args)
@@ -345,14 +368,6 @@ def _load_task_specs(task_path: Path) -> list[str]:
         return []
 
 
-def split_spec(spec: str) -> tuple[str, str | None]:
-    parts = spec.rsplit("@", 1)
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    else:
-        return spec, None
-
-
 def code_has_decorator(code: str, decorator: str) -> bool:
     try:
         tree = ast.parse(code)
@@ -383,7 +398,11 @@ def as_solver_spec(solver: Solver) -> SolverSpec:
         raise PrerequisiteError(
             f"The solver {getattr(solver, '__name__', '<unknown>')} was not created by a function decorated with @solver so cannot be recorded."
         )
-    return SolverSpec(solver=registry_info(solver).name, args=registry_params(solver))
+    return SolverSpec(
+        solver=registry_info(solver).name,
+        args=getattr(solver, SOLVER_ALL_PARAMS_ATTR, {}),
+        args_passed=registry_params(solver),
+    )
 
 
 def solver_from_spec(spec: SolverSpec) -> Solver:
@@ -408,9 +427,9 @@ def solver_from_spec(spec: SolverSpec) -> Solver:
             if solver_name is None:
                 raise ValueError(f"Unable to resolve solver name from {spec.solver}")
             elif registry_lookup("solver", solver_name) is not None:
-                return registry_create("solver", solver_name, **spec.args)
+                return registry_create("solver", solver_name, **spec.args_passed)
             elif registry_lookup("agent", solver_name) is not None:
-                agent = registry_create("agent", solver_name, **spec.args)
+                agent = registry_create("agent", solver_name, **spec.args_passed)
                 return as_solver(agent)
             else:
                 raise ValueError(
@@ -469,18 +488,18 @@ def solver_from_spec(spec: SolverSpec) -> Solver:
 
             # create decorator based solvers using the registry
             if any(solver[0] == solver_name for solver in solver_decorators):
-                return registry_create("solver", solver_name, **spec.args)
+                return registry_create("solver", solver_name, **spec.args_passed)
 
             # create decorator based agents using the registry
             elif any(agent[0] == solver_name for agent in agent_decorators):
-                agent = registry_create("agent", solver_name, **spec.args)
+                agent = registry_create("agent", solver_name, **spec.args_passed)
                 return as_solver(agent)
 
             # create bridge based solvers by calling the function and wrapping it in bridge()
             else:
                 agent_fn = getattr(solver_module, solver_name, None)
                 if inspect.isfunction(agent_fn):
-                    return bridge(agent_fn(**spec.args))
+                    return bridge(agent_fn(**spec.args_passed))
                 elif agent_fn is not None:
                     raise PrerequisiteError(
                         f"The object {solver_name} in file {pretty_solver_file} is not a Python function."

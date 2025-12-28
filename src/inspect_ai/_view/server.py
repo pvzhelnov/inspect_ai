@@ -1,6 +1,7 @@
 import logging
 import os
 import urllib.parse
+from io import BytesIO
 from logging import LogRecord, getLogger
 from pathlib import Path
 from typing import (
@@ -15,9 +16,12 @@ from pydantic_core import to_jsonable_python
 
 from inspect_ai._display import display
 from inspect_ai._eval.evalset import EvalSet, read_eval_set_info
+from inspect_ai._util.azure import is_azure_auth_error, is_azure_path
 from inspect_ai._util.constants import DEFAULT_SERVER_HOST, DEFAULT_VIEW_PORT
-from inspect_ai._util.file import (
-    filesystem,
+from inspect_ai._util.file import filesystem
+from inspect_ai._view.azure import (
+    azure_debug_exists,
+    azure_runtime_hint,
 )
 from inspect_ai.log._file import (
     read_eval_log_headers_async,
@@ -35,6 +39,7 @@ from .common import (
     get_logs,
     normalize_uri,
     parse_log_token,
+    stream_log_bytes,
 )
 from .notify import view_last_eval_time
 
@@ -54,9 +59,16 @@ def view_server(
 
     # get filesystem and resolve log_dir to full path
     fs = filesystem(log_dir)
-    if not fs.exists(log_dir):
-        fs.mkdir(log_dir, True)
-    log_dir = fs.info(log_dir).name
+    if is_azure_path(log_dir):
+        try:
+            azure_debug_exists(fs, log_dir, display().print)
+            # Don't call fs.info(); keep original URI (fsspec paths acceptable downstream)
+        except Exception as ex:  # provide actionable guidance for Azure failures
+            raise RuntimeError(azure_runtime_hint(ex)) from ex
+    else:
+        if not fs.exists(log_dir):
+            fs.mkdir(log_dir, True)
+        log_dir = fs.info(log_dir).name
 
     # validate log file requests (must be in the log_dir
     # unless authorization has been provided)
@@ -114,6 +126,45 @@ def view_server(
         return web.Response(
             body=body, headers=headers, content_type="application/octet-stream"
         )
+
+    @routes.get("/api/log-download/{log}")
+    async def api_log_download(request: web.Request) -> web.StreamResponse:
+        # log file requested
+        file = normalize_uri(request.match_info["log"])
+        validate_log_file_request(file)
+
+        # get file size and stream
+        file_size = await get_log_size(file)
+        stream = await stream_log_bytes(file)
+
+        # determine filename
+        base_name = Path(file).stem
+        filename = f"{base_name}.eval"
+
+        # set headers for download
+        headers = {
+            "Content-Length": str(file_size),
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        }
+
+        if isinstance(stream, BytesIO):
+            # BytesIO case - return regular response
+            return web.Response(
+                body=stream.getvalue(),
+                headers=headers,
+                content_type="application/octet-stream",
+            )
+        else:
+            # AsyncIterable case - create streaming response
+            response = web.StreamResponse(headers=headers)
+            response.content_type = "application/octet-stream"
+            await response.prepare(request)
+
+            async for chunk in stream:
+                await response.write(chunk)
+
+            await response.write_eof()
+            return response
 
     @routes.get("/api/log-dir")
     async def api_log_dir(request: web.Request) -> web.Response:
@@ -225,14 +276,18 @@ def view_server(
 
         fs = filesystem(request_dir)
         flow_file = f"{request_dir}{fs.sep}flow.yaml"
-        if fs.exists(flow_file):
+        try:
             bytes = fs.read_bytes(flow_file)
-
-            return web.Response(
-                text=bytes.decode("utf-8"), content_type="application/yaml", status=200
-            )
-        else:
+        except FileNotFoundError:
             return web.Response(status=404, reason="Flow file not found")
+        except Exception as ex:
+            if is_azure_path(request_dir) and is_azure_auth_error(ex):
+                return web.Response(status=404, reason="Flow file not found")
+            raise
+
+        return web.Response(
+            text=bytes.decode("utf-8"), content_type="application/yaml", status=200
+        )
 
     @routes.get("/api/log-headers")
     async def api_log_headers(request: web.Request) -> web.Response:

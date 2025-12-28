@@ -54,6 +54,7 @@ from inspect_ai._util.registry import (
 from inspect_ai._util.retry import report_http_retry
 from inspect_ai._util.trace import trace_action
 from inspect_ai._util.working import report_sample_waiting_time, sample_working_time
+from inspect_ai.model._reasoning import reasoning_to_think_tag
 from inspect_ai.model._retry import model_retry_config
 from inspect_ai.tool import Tool, ToolChoice, ToolFunction, ToolInfo
 from inspect_ai.tool._mcp._remote import is_mcp_server_tool
@@ -666,6 +667,14 @@ class Model:
         else:
             cache_policy = cache
 
+        # track reported waiting time during this generate call
+        reported_waiting_time = 0.0
+
+        def report_waiting_time(waiting_time: float) -> None:
+            nonlocal reported_waiting_time
+            report_sample_waiting_time(waiting_time)
+            reported_waiting_time += waiting_time
+
         @retry(
             **model_retry_config(
                 self.api.model_name,
@@ -674,6 +683,7 @@ class Model:
                 self.should_retry,
                 self.before_retry,
                 log_model_retry,
+                report_waiting_time,
                 self.api.retry_wait(),
             )
         )
@@ -808,13 +818,19 @@ class Model:
 
             return output, event
 
-        # call the model (this will so retries, etc., so report waiting time
+        # call the model (this will do retries, etc., so report waiting time
         # as elapsed time - actual time for successful model call)
         time_start = time.monotonic()
         model_output, event = await generate()
         total_time = time.monotonic() - time_start
         if model_output.time:
-            report_sample_waiting_time(total_time - model_output.time)
+            # we've already reported some of the waiting time in tenacity callbacks
+            # any remaining waiting time will have been due to internal retry within
+            # model providers, which we can get from:
+            #    total_time - reported_waiting_time - model_call_time
+            report_sample_waiting_time(
+                total_time - reported_waiting_time - model_output.time
+            )
 
         # return results
         return model_output, event
@@ -1334,9 +1350,7 @@ def resolve_reasoning_history(
                 content: list[Content] = []
                 for c in message.content:
                     if isinstance(c, ContentReasoning):
-                        content.append(
-                            ContentText(text=f"<think>\n{c.reasoning}\n</think>")
-                        )
+                        content.append(ContentText(text=reasoning_to_think_tag(c)))
                     else:
                         content.append(c)
                 message = message.model_copy(update={"content": content})
@@ -1544,13 +1558,13 @@ def combine_messages(
     # default values rather than dropped.
 
     if isinstance(a.content, str) and isinstance(b.content, str):
-        return message_type(id=a.id, content=f"{a.content}\n{b.content}")
+        return message_type(content=f"{a.content}\n{b.content}")
     elif isinstance(a.content, list) and isinstance(b.content, list):
-        return message_type(id=a.id, content=a.content + b.content)
+        return message_type(content=a.content + b.content)
     elif isinstance(a.content, str) and isinstance(b.content, list):
-        return message_type(id=a.id, content=[ContentText(text=a.content), *b.content])
+        return message_type(content=[ContentText(text=a.content), *b.content])
     elif isinstance(a.content, list) and isinstance(b.content, str):
-        return message_type(id=a.id, content=a.content + [ContentText(text=b.content)])
+        return message_type(content=a.content + [ContentText(text=b.content)])
     else:
         raise TypeError(
             f"Cannot combine messages with invalid content types: {a.content!r}, {b.content!r}"
@@ -1601,8 +1615,14 @@ def set_total_messages(input: str | list[ChatMessage]) -> None:
     set_active_sample_total_messages(total_messages)
 
 
-def init_model_usage() -> None:
-    model_usage_context_var.set({})
+def init_model_usage(initial_usage: dict[str, ModelUsage] | None = None) -> None:
+    # explicit intialization
+    if initial_usage is not None:
+        model_usage_context_var.set(initial_usage)
+
+    # default initialization (ignore if we've already been explicitly intialized)
+    elif len(model_usage_context_var.get()) == 0:
+        model_usage_context_var.set({})
 
 
 def init_sample_model_usage() -> None:
