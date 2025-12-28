@@ -73,9 +73,9 @@ MOCK_FIXTURES = {
         "rationale": "Academic profile page with complete metrics",
     },
     "Step4_StrategyDecision": {
-        "strategy": "text_search",
-        "rationale": "Page structure is simple, text search will suffice",
-        "search_patterns": ["h-index", "citations", "i10-index"],
+        "strategy": "web_browser_tool",
+        "rationale": "Page requires navigation and JavaScript",
+        "search_patterns": [],
     },
     "Step5_Extraction": {
         "h_index": 192,
@@ -343,7 +343,7 @@ def text_search_in_html(html_content: str, patterns: list[str]) -> dict:
 # ============================================================================
 
 
-async def use_web_browser_tool_agentically(
+def use_web_browser_tool_agentically(
     url: str, search_goal: str, model
 ) -> dict:
     """
@@ -370,7 +370,7 @@ Use the web browser tools to navigate and extract the information.""",
             config=GenerateConfig(max_tokens=2048),
         )
 
-    # Execute
+    # Execute (eval is synchronous, not async!)
     log = eval(browser_task(), model=model)[0]
 
     # Extract all pages visited from tool calls
@@ -595,23 +595,12 @@ Make your decision.""",
         context_for_extraction = f"Text search results: {json.dumps(search_results, indent=2)}"
 
     else:
-        # Use web browser tool agentically
-        if MOCK_MODE:
-            print("  (MOCKED - Skipping browser tool)")
-            browser_results = {"completion": "Mock browser results"}
-        else:
-            loop2 = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop2)
-            try:
-                browser_results = loop2.run_until_complete(
-                    use_web_browser_tool_agentically(
-                        step3.selected_url,
-                        "Find h-index, citations, publications",
-                        model,
-                    )
-                )
-            finally:
-                loop2.close()
+        # Use web browser tool agentically (even in MOCK_MODE!)
+        browser_results = use_web_browser_tool_agentically(
+            step3.selected_url,
+            "Find h-index, citations, publications",
+            model,
+        )
         context_for_extraction = f"Browser tool results: {browser_results['completion']}"
 
     # STEP 7: Extraction
