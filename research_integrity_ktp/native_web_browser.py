@@ -50,54 +50,121 @@ from inspect_ai.util import json_schema
 
 async def get_accessibility_tree(page: Page) -> str:
     """
-    Extract accessibility tree from Playwright page.
+    Extract accessibility tree from Playwright page using JavaScript evaluation.
     Returns a text representation similar to Inspect AI's web_browser tool.
     """
-    # Get accessibility snapshot from Playwright
-    snapshot = await page.accessibility.snapshot()
+    # Use JavaScript to extract interactive elements
+    elements = await page.evaluate("""
+        () => {
+            const elements = [];
+            let id = 1;
 
-    if not snapshot:
-        return "[No accessibility tree available]"
+            // Helper to get visible text
+            function getVisibleText(el) {
+                const text = el.innerText || el.textContent || '';
+                return text.trim().slice(0, 100);  // Limit length
+            }
 
-    # Convert to text format with element IDs
+            // Helper to get element role
+            function getRole(el) {
+                const role = el.getAttribute('role');
+                if (role) return role;
+                return el.tagName.toLowerCase();
+            }
+
+            // Extract links
+            document.querySelectorAll('a[href]').forEach(el => {
+                const text = getVisibleText(el);
+                if (text) {
+                    elements.push({
+                        id: id++,
+                        role: 'link',
+                        name: text,
+                        href: el.href
+                    });
+                }
+            });
+
+            // Extract buttons
+            document.querySelectorAll('button, input[type="button"], input[type="submit"]').forEach(el => {
+                const text = getVisibleText(el) || el.value || el.getAttribute('aria-label') || '';
+                if (text) {
+                    elements.push({
+                        id: id++,
+                        role: 'button',
+                        name: text
+                    });
+                }
+            });
+
+            // Extract input fields
+            document.querySelectorAll('input:not([type="button"]):not([type="submit"]), textarea').forEach(el => {
+                const label = el.getAttribute('aria-label') || el.placeholder || el.name || '';
+                elements.push({
+                    id: id++,
+                    role: 'input',
+                    name: label,
+                    type: el.type || 'text',
+                    value: el.value || ''
+                });
+            });
+
+            // Extract headings
+            document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
+                const text = getVisibleText(el);
+                if (text) {
+                    elements.push({
+                        id: id++,
+                        role: el.tagName.toLowerCase(),
+                        name: text
+                    });
+                }
+            });
+
+            // Extract select elements
+            document.querySelectorAll('select').forEach(el => {
+                const label = el.getAttribute('aria-label') || el.name || '';
+                elements.push({
+                    id: id++,
+                    role: 'select',
+                    name: label
+                });
+            });
+
+            return elements;
+        }
+    """)
+
+    if not elements:
+        return "[No interactive elements found]"
+
+    # Format as text tree
     lines = []
-    element_id_counter = [1]  # Use list to allow mutation in nested function
-
-    def format_node(node, depth=0):
-        indent = "  " * depth
-        node_id = element_id_counter[0]
-        element_id_counter[0] += 1
-
-        # Extract node info
-        role = node.get("role", "")
-        name = node.get("name", "")
+    for elem in elements[:100]:  # Limit to first 100 elements
+        role = elem.get("role", "")
+        name = elem.get("name", "")
+        elem_id = elem.get("id", 0)
 
         # Format line
         if name:
-            line = f"{indent}[{node_id}] {role} \"{name}\""
+            line = f"[{elem_id}] {role} \"{name}\""
         else:
-            line = f"{indent}[{node_id}] {role}"
+            line = f"[{elem_id}] {role}"
 
-        # Add additional properties
+        # Add properties
         props = []
-        if node.get("focused"):
-            props.append("focused: True")
-        if node.get("value"):
-            props.append(f"value: {node.get('value')}")
-        if node.get("description"):
-            props.append(f"description: {node.get('description')}")
+        if "href" in elem:
+            props.append(f"href: {elem['href'][:50]}")
+        if "type" in elem:
+            props.append(f"type: {elem['type']}")
+        if elem.get("value"):
+            props.append(f"value: {elem['value'][:50]}")
 
         if props:
             line += " [" + ", ".join(props) + "]"
 
         lines.append(line)
 
-        # Process children
-        children = node.get("children", [])
-        for child in children:
-            format_node(child, depth + 1)
-
-    format_node(snapshot)
     return "\n".join(lines)
 
 
@@ -398,10 +465,50 @@ Choose your next action."""
                 )
 
             log = eval(browser_decision_task(), model=model)[0]
-            decision_json = json.loads(log.samples[0].output.completion)
+            completion = log.samples[0].output.completion
 
-            # Parse action
-            action_type = decision_json.get("action")
+            print(f"  DEBUG: LLM completion = {completion[:200]}")
+
+            try:
+                decision_json = json.loads(completion)
+            except json.JSONDecodeError as e:
+                print(f"  ✗ JSON decode error: {e}")
+                print(f"  ✗ Completion was: {completion}")
+                break
+
+            # Handle invalid types (float, int, str, None)
+            if not isinstance(decision_json, (dict, list)):
+                print(f"  ✗ LLM returned invalid type: {type(decision_json).__name__}")
+                print(f"  ✗ Value: {decision_json}")
+                print(f"  ✗ Cannot complete - LLM output is not structured correctly")
+                action = BrowserAction_Done(
+                    action="done",
+                    result=f"Error: LLM returned {type(decision_json).__name__} instead of action object"
+                )
+                action_history.append(action.model_dump())
+                break
+
+            # Handle if LLM returns a list instead of a single object
+            if isinstance(decision_json, list):
+                if not decision_json:
+                    print(f"  ✗ LLM returned empty list")
+                    break
+                decision_json = decision_json[0]
+
+            # Parse action - handle both "action" and "type" field names
+            action_type = decision_json.get("action") or decision_json.get("type")
+
+            # Normalize field names if LLM used "type" instead of "action"
+            if "type" in decision_json and "action" not in decision_json:
+                decision_json["action"] = decision_json.pop("type")
+
+            # Normalize "query" to "text" for type actions
+            if action_type == "type" and "query" in decision_json:
+                decision_json["text"] = decision_json.pop("query")
+
+            # Normalize "reason" to "result" for done actions
+            if action_type == "done" and "reason" in decision_json:
+                decision_json["result"] = decision_json.pop("reason")
 
             if action_type == "done":
                 action = BrowserAction_Done(**decision_json)
@@ -410,20 +517,31 @@ Choose your next action."""
                 break
 
             # Create appropriate action object
-            if action_type == "go":
-                action = BrowserAction_Go(**decision_json)
-            elif action_type == "click":
-                action = BrowserAction_Click(**decision_json)
-            elif action_type == "type":
-                action = BrowserAction_Type(**decision_json)
-            elif action_type == "type_submit":
-                action = BrowserAction_TypeSubmit(**decision_json)
-            elif action_type == "scroll":
-                action = BrowserAction_Scroll(**decision_json)
-            elif action_type == "back":
-                action = BrowserAction_Back(**decision_json)
-            else:
-                print(f"  ✗ Unknown action: {action_type}")
+            try:
+                if action_type == "go":
+                    action = BrowserAction_Go(**decision_json)
+                elif action_type == "click":
+                    action = BrowserAction_Click(**decision_json)
+                elif action_type == "type":
+                    action = BrowserAction_Type(**decision_json)
+                elif action_type == "type_submit":
+                    action = BrowserAction_TypeSubmit(**decision_json)
+                elif action_type == "scroll":
+                    action = BrowserAction_Scroll(**decision_json)
+                elif action_type == "back":
+                    action = BrowserAction_Back(**decision_json)
+                else:
+                    print(f"  ✗ Unknown action: {action_type}")
+                    break
+            except Exception as e:
+                print(f"  ✗ Invalid action parameters: {e}")
+                print(f"  ✗ Cannot complete task - no suitable elements found")
+                # Treat as "done" with error message
+                action = BrowserAction_Done(
+                    action="done",
+                    result=f"Cannot complete: {str(e)}"
+                )
+                action_history.append(action.model_dump())
                 break
 
             print(f"  ✓ Action: {action.action}")

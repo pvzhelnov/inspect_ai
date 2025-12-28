@@ -64,13 +64,13 @@ class MockResponse(BaseModel):
 
 MOCK_FIXTURES = {
     "Step1_Planning": {
-        "target_website": "Example Academic Site",
+        "target_website": "MIT CSAIL",
         "search_query": "Geoffrey Hinton academic profile",
-        "rationale": "Academic site provides comprehensive citation metrics",
+        "rationale": "MIT CSAIL directory provides comprehensive researcher profiles",
     },
     "Step2_URLSelection": {
-        "selected_url": "http://example.com",
-        "rationale": "Academic profile page with complete metrics",
+        "selected_url": "https://www.csail.mit.edu/people",
+        "rationale": "MIT CSAIL people directory with search functionality",
     },
     "Step4_StrategyDecision": {
         "strategy": "web_browser_tool",
