@@ -363,14 +363,15 @@ def use_native_web_browser(
     """
     Use NATIVE Playwright with structured outputs for browser navigation.
     LLM decides actions with full research context, Pydantic executes with Playwright.
+    ALL BROWSER ACTIONS GO INTO ONE EVAL LOG!
     """
-    from native_web_browser import browse_with_llm
+    from native_web_browser_v2 import browse_with_llm
 
     print(f"\n[Native Web Browser] Starting...")
     print(f"  URL: {url}")
     print(f"  Context: Research mission with Tavily results")
 
-    # Use native browser implementation
+    # Use native browser implementation V2 - single eval log!
     result = browse_with_llm(
         url=url,
         goal=research_context,  # Pass full context as goal
