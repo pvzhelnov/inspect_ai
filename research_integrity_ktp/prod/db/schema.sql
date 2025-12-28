@@ -14,9 +14,9 @@ CREATE TABLE IF NOT EXISTS researchers (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_researchers_status ON researchers(status);
-CREATE INDEX idx_researchers_priority ON researchers(priority DESC);
-CREATE INDEX idx_researchers_created ON researchers(created_at);
+CREATE INDEX IF NOT EXISTS idx_researchers_status ON researchers(status);
+CREATE INDEX IF NOT EXISTS idx_researchers_priority ON researchers(priority DESC);
+CREATE INDEX IF NOT EXISTS idx_researchers_created ON researchers(created_at);
 
 -- Research iterations: logs each research iteration
 CREATE TABLE IF NOT EXISTS research_iterations (
@@ -39,9 +39,9 @@ CREATE TABLE IF NOT EXISTS research_iterations (
     FOREIGN KEY (researcher_id) REFERENCES researchers(researcher_id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_iterations_researcher ON research_iterations(researcher_id);
-CREATE INDEX idx_iterations_status ON research_iterations(status);
-CREATE INDEX idx_iterations_number ON research_iterations(researcher_id, iteration_number);
+CREATE INDEX IF NOT EXISTS idx_iterations_researcher ON research_iterations(researcher_id);
+CREATE INDEX IF NOT EXISTS idx_iterations_status ON research_iterations(status);
+CREATE INDEX IF NOT EXISTS idx_iterations_number ON research_iterations(researcher_id, iteration_number);
 
 -- LLM requests: logs all API calls for debugging and cost tracking
 CREATE TABLE IF NOT EXISTS llm_requests (
@@ -65,10 +65,10 @@ CREATE TABLE IF NOT EXISTS llm_requests (
     FOREIGN KEY (iteration_id) REFERENCES research_iterations(id) ON DELETE SET NULL
 );
 
-CREATE INDEX idx_llm_requests_status ON llm_requests(status);
-CREATE INDEX idx_llm_requests_researcher ON llm_requests(researcher_id);
-CREATE INDEX idx_llm_requests_created ON llm_requests(created_at);
-CREATE INDEX idx_llm_requests_type ON llm_requests(request_type);
+CREATE INDEX IF NOT EXISTS idx_llm_requests_status ON llm_requests(status);
+CREATE INDEX IF NOT EXISTS idx_llm_requests_researcher ON llm_requests(researcher_id);
+CREATE INDEX IF NOT EXISTS idx_llm_requests_created ON llm_requests(created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_requests_type ON llm_requests(request_type);
 
 -- Orchestrator decisions: tracks orchestrator agent decisions
 CREATE TABLE IF NOT EXISTS orchestrator_decisions (
@@ -85,8 +85,8 @@ CREATE TABLE IF NOT EXISTS orchestrator_decisions (
     FOREIGN KEY (researcher_id) REFERENCES researchers(researcher_id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_orchestrator_researcher ON orchestrator_decisions(researcher_id);
-CREATE INDEX idx_orchestrator_created ON orchestrator_decisions(created_at);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_researcher ON orchestrator_decisions(researcher_id);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_created ON orchestrator_decisions(created_at);
 
 -- Processing batches: tracks batch jobs for parallelization
 CREATE TABLE IF NOT EXISTS processing_batches (
@@ -104,8 +104,8 @@ CREATE TABLE IF NOT EXISTS processing_batches (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_batches_status ON processing_batches(status);
-CREATE INDEX idx_batches_created ON processing_batches(created_at);
+CREATE INDEX IF NOT EXISTS idx_batches_status ON processing_batches(status);
+CREATE INDEX IF NOT EXISTS idx_batches_created ON processing_batches(created_at);
 
 -- Web search cache: cache web search results to avoid duplicates
 CREATE TABLE IF NOT EXISTS web_search_cache (
@@ -118,8 +118,8 @@ CREATE TABLE IF NOT EXISTS web_search_cache (
     UNIQUE(search_query, language)
 );
 
-CREATE INDEX idx_search_cache_query ON web_search_cache(search_query, language);
-CREATE INDEX idx_search_cache_expires ON web_search_cache(expires_at);
+CREATE INDEX IF NOT EXISTS idx_search_cache_query ON web_search_cache(search_query, language);
+CREATE INDEX IF NOT EXISTS idx_search_cache_expires ON web_search_cache(expires_at);
 
 -- Browser cache: cache browsed pages to avoid re-fetching
 CREATE TABLE IF NOT EXISTS browser_cache (
@@ -131,8 +131,8 @@ CREATE TABLE IF NOT EXISTS browser_cache (
     expires_at TIMESTAMP
 );
 
-CREATE INDEX idx_browser_cache_url ON browser_cache(url);
-CREATE INDEX idx_browser_cache_expires ON browser_cache(expires_at);
+CREATE INDEX IF NOT EXISTS idx_browser_cache_url ON browser_cache(url);
+CREATE INDEX IF NOT EXISTS idx_browser_cache_expires ON browser_cache(expires_at);
 
 -- System metrics: track system performance and statistics
 CREATE TABLE IF NOT EXISTS system_metrics (
@@ -144,5 +144,5 @@ CREATE TABLE IF NOT EXISTS system_metrics (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_metrics_name ON system_metrics(metric_name);
-CREATE INDEX idx_metrics_created ON system_metrics(created_at);
+CREATE INDEX IF NOT EXISTS idx_metrics_name ON system_metrics(metric_name);
+CREATE INDEX IF NOT EXISTS idx_metrics_created ON system_metrics(created_at);
