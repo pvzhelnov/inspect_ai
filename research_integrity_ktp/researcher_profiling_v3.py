@@ -30,6 +30,7 @@ from inspect_ai.solver import (
     solver,
 )
 from inspect_ai.util import json_schema
+from inspect_ai._util.content import ContentImage, ContentText
 
 load_dotenv()
 
@@ -118,6 +119,15 @@ class Step6_Orchestrator(BaseModel):
     rationale: str
     filled_fields: list[str] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
+
+
+class TextSearchAction(BaseModel):
+    """Text search action - like grep on HTML."""
+    action: Literal["search", "done"]
+    pattern: str | None = None  # Regex or text pattern to search
+    context_lines: int = Field(default=2)  # Lines before/after match
+    case_sensitive: bool = Field(default=False)
+    rationale: str = ""  # Why this search
 
 
 # ============================================================================
@@ -284,13 +294,37 @@ def playwright_capture_solver():
                     # Network blocked in sandboxed environment - use fallback
                     print(f"  ⚠ Network error (expected in sandbox): {type(e).__name__}")
                     print(f"  ⚠ Using fallback mock HTML content")
-                    html_content = f"""<html><body>
-                        <h1>Geoffrey Hinton - Mock Profile</h1>
-                        <p>h-index: 192</p>
-                        <p>Total citations: 500,000+</p>
-                        <p>Affiliation: University of Toronto, Google Brain</p>
-                        <p>Research areas: Deep Learning, Neural Networks</p>
-                        <a href="https://scholar.google.com">Google Scholar Profile</a>
+                    html_content = f"""<html><head><title>Geoffrey Hinton - Wikipedia</title></head><body>
+                        <div class="infobox">
+                            <h1>Geoffrey Everest Hinton</h1>
+                            <p><strong>Born:</strong> December 6, 1947 (age 76)</p>
+                            <p><strong>Nationality:</strong> British-Canadian</p>
+                            <p><strong>Alma mater:</strong> University of Cambridge (BA), University of Edinburgh (PhD)</p>
+                            <p><strong>Known for:</strong> Deep learning, backpropagation, Boltzmann machines, capsule neural networks</p>
+                            <p><strong>Awards:</strong> Turing Award (2018), BBVA Foundation Frontiers of Knowledge Award</p>
+                        </div>
+                        <div class="content">
+                            <h2>Career</h2>
+                            <p>Geoffrey Hinton is a British-Canadian cognitive psychologist and computer scientist, most noted for his work on artificial neural networks. He is University Professor Emeritus at the University of Toronto.</p>
+                            <h2>Research</h2>
+                            <p>Hinton's research focuses on deep learning and neural networks. He has published over 200 papers.</p>
+                            <p><strong>Google Scholar Profile:</strong></p>
+                            <ul>
+                                <li>h-index: 192</li>
+                                <li>i10-index: 445</li>
+                                <li>Total citations: 512,483</li>
+                            </ul>
+                            <h3>Top Publications:</h3>
+                            <ul>
+                                <li>"Deep Neural Networks for Acoustic Modeling in Speech Recognition" (2012) - 12,482 citations</li>
+                                <li>"ImageNet Classification with Deep Convolutional Neural Networks" (2012) - 98,724 citations</li>
+                                <li>"Reducing the Dimensionality of Data with Neural Networks" (2006) - 15,392 citations</li>
+                            </ul>
+                            <h2>Affiliations</h2>
+                            <p>University of Toronto, Vector Institute, Google Brain (2013-2023), Google DeepMind (current)</p>
+                            <h2>Research Areas</h2>
+                            <p>Deep learning, machine learning, neural networks, computer vision, artificial intelligence, cognitive science</p>
+                        </div>
                     </body></html>"""
                     network_error = True
 
@@ -342,18 +376,44 @@ def strategy_decision_solver():
         print("=" * 70)
 
         capture = state.store.get("page_capture")
+        screenshot_path = capture['screenshot_path']
+        had_network_error = capture.get('network_error', False)
 
-        prompt = f"""Based on the screenshot, decide extraction strategy:
+        # Build prompt text
+        prompt_text = f"""Decide extraction strategy:
 
 Page HTML length: {len(capture['html_content'])} chars
+Network error: {had_network_error}
 
 Strategies:
-- text_search: Use regex/grep on HTML dump (fast, works for static content)
-- web_browser_tool: Use browser navigation (for JavaScript-heavy pages)
+- text_search: Use iterative text search on HTML (grep-like, fast for static content)
+- web_browser_tool: Use browser navigation (for JavaScript-heavy interactive pages)
 
 Choose the best approach."""
 
-        state.messages.append(ChatMessageUser(content=prompt))
+        # Try to pass screenshot if available and model supports it
+        # (Some models don't support vision - fallback to text only)
+        try:
+            from pathlib import Path
+            screenshot_file = Path(screenshot_path)
+
+            # Check if screenshot is real (not our fallback placeholder)
+            if screenshot_file.exists() and screenshot_file.stat().st_size > 100 and not had_network_error:
+                # Send with image
+                state.messages.append(
+                    ChatMessageUser(
+                        content=[
+                            ContentImage(image=screenshot_path),
+                            ContentText(text=prompt_text),
+                        ]
+                    )
+                )
+            else:
+                # No valid screenshot - text only
+                state.messages.append(ChatMessageUser(content=prompt_text))
+        except Exception:
+            # Fallback to text only if image fails
+            state.messages.append(ChatMessageUser(content=prompt_text))
 
         state = await generate_fn(
             state,
@@ -394,17 +454,132 @@ def browser_navigation_solver():
         strategy = state.store.get("strategy")
 
         if strategy.strategy == "text_search":
-            print("  Strategy: Text search in HTML dump")
+            print("  Strategy: Iterative text search (grep-like)")
             page_capture = state.store.get("page_capture")
             html_content = page_capture["html_content"]
+            html_lines = html_content.split('\n')
 
-            # Simple text search for common researcher metrics
-            results = {
-                "html_content": html_content,
+            planning = state.store.get("planning")
+
+            # Build research context
+            research_context = f"""RESEARCH MISSION:
+Researcher: {state.input_text}
+Search query: {planning.search_query}
+Target: {planning.target_website}
+
+YOUR TASK: Find h-index, citations, publications, affiliations, research areas
+
+HTML document has {len(html_lines)} lines, {len(html_content)} chars total."""
+
+            search_history = []
+            action_count = 0
+            max_actions = 10
+
+            # Iterative text search loop
+            while action_count < max_actions:
+                action_count += 1
+                print(f"\n  [Search Action {action_count}]")
+
+                # Build history summary
+                history_summary = ""
+                if search_history:
+                    history_summary = "\n\nPrevious searches:\n"
+                    for i, prev in enumerate(search_history[-3:], 1):
+                        pattern = prev.get('pattern', '')
+                        results_count = prev.get('results_count', 0)
+                        history_summary += f"{i}. Pattern '{pattern}': {results_count} matches\n"
+
+                # Build prompt
+                prompt = f"""{research_context}
+{history_summary}
+
+Choose next search action:
+- action: "search" + pattern (regex/text to find)
+- action: "done" when you have enough data
+
+Examples:
+- pattern: "h-index.*?(\\d+)" to find h-index value
+- pattern: "citations" to find citation counts
+- pattern: "affiliation" to find institutional info"""
+
+                state.messages.append(ChatMessageUser(content=prompt))
+
+                # Call generate() for this search action
+                state = await generate_fn(
+                    state,
+                    response_schema=ResponseSchema(
+                        name="TextSearchAction",
+                        json_schema=json_schema(TextSearchAction),
+                        strict=True,
+                    ),
+                    max_tokens=512,
+                )
+
+                search_action = TextSearchAction.model_validate_json(state.output.completion)
+
+                if search_action.action == "done":
+                    print(f"  ✓ Search complete after {action_count} actions")
+                    break
+
+                # Execute search
+                pattern = search_action.pattern
+                if not pattern:
+                    continue
+
+                print(f"  ▸ Searching: '{pattern}'")
+
+                try:
+                    # Perform regex search with context lines
+                    import re as regex_module
+                    flags = 0 if search_action.case_sensitive else regex_module.IGNORECASE
+                    regex = regex_module.compile(pattern, flags)
+
+                    matches = []
+                    for line_num, line in enumerate(html_lines):
+                        if regex.search(line):
+                            # Get context lines
+                            start = max(0, line_num - search_action.context_lines)
+                            end = min(len(html_lines), line_num + search_action.context_lines + 1)
+                            context = '\n'.join(html_lines[start:end])
+                            matches.append({
+                                'line_num': line_num + 1,
+                                'context': context[:500],  # Limit context to 500 chars
+                            })
+
+                            if len(matches) >= 5:  # Max 5 matches per search
+                                break
+
+                    # Build results summary
+                    results_text = f"Found {len(matches)} matches:\n\n"
+                    for m in matches:
+                        results_text += f"Line {m['line_num']}:\n{m['context']}\n---\n"
+
+                    # Add assistant message with results
+                    state.messages.append(
+                        ChatMessageUser(content=f"Search results:\n{results_text[:1500]}")
+                    )
+
+                    search_history.append({
+                        'pattern': pattern,
+                        'results_count': len(matches),
+                        'action': action_count,
+                    })
+
+                    print(f"  ✓ Found {len(matches)} matches")
+
+                except Exception as e:
+                    print(f"  ✗ Search failed: {e}")
+                    state.messages.append(
+                        ChatMessageUser(content=f"Search error: {str(e)}")
+                    )
+
+            # Store results
+            state.store.set("browser_results", {
+                "search_history": search_history,
                 "search_method": "text_search",
-            }
-            state.store.set("browser_results", results)
-            print(f"  ✓ HTML loaded ({len(html_content)} chars)")
+                "actions_taken": action_count,
+            })
+
             return state
 
         # Otherwise, use web browser tool
@@ -563,12 +738,17 @@ def extraction_solver():
         search_method = browser_results.get("search_method", "browser_navigation")
 
         if search_method == "text_search":
-            html_content = browser_results.get("html_content", "")
-            prompt = f"""Extract researcher metrics from this HTML content:
+            search_history = browser_results.get("search_history", [])
+            prompt = f"""Based on the {len(search_history)} searches you performed above, extract researcher metrics:
 
-{html_content[:1000]}
+Extract what you found:
+- h-index (if found)
+- total_citations (if found)
+- affiliations (list)
+- research_areas (list)
+- top_papers (list)
 
-Extract what you can find: h-index, citations, papers, affiliations, research areas"""
+Use None/empty list if not found."""
         else:
             prompt = f"""Extract researcher metrics from browser navigation results:
 
