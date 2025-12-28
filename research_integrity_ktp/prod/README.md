@@ -77,17 +77,19 @@ Create a JSONL file with researcher samples:
 Or generate sample data:
 
 ```bash
-python scripts/generate_samples.py --output samples.jsonl --count 1000
+mkdir -p research_integrity_ktp/prod/test_data
+python research_integrity_ktp/prod/scripts/generate_samples.py --output research_integrity_ktp/prod/test_data/samples.jsonl --count 1000
 ```
 
 ### 4. Run Batch Processing
 
 ```bash
-python scripts/run_batch.py \
-    --input samples.jsonl \
+python research_integrity_ktp/prod/scripts/run_batch.py \
+    --input research_integrity_ktp/prod/test_data/samples.jsonl \
+    --db-path research_integrity_ktp/prod/test_data/researcher_profiles.db \
     --batch-name batch_001 \
     --workers 4 \
-    --model openrouter/qwen/qwen3-coder:free \
+    --model openai-api/llama-cpp/google/gemma-3-4b-it-qat-q4_0-gguf \
     --max-iterations 5
 ```
 
