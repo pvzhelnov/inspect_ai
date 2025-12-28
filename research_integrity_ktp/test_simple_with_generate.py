@@ -20,7 +20,7 @@ def task_with_generate():
 
 
 print("Testing with generate() solver...")
-model = get_model("openrouter/qwen/qwen3-4b:free")
+model = get_model("openai-api/llama-cpp/google/gemma-3-4b-it-qat-q4_0-gguf")
 print(f"Model: {model.name}")
 
 print("Running eval...")
