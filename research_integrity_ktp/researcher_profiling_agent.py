@@ -339,49 +339,31 @@ def text_search_in_html(html_content: str, patterns: list[str]) -> dict:
 
 
 # ============================================================================
-# Step 5b: Web browser tool (agentic)
+# Step 5b: Native web browser (NATIVE Playwright + structured outputs)
 # ============================================================================
 
 
-def use_web_browser_tool_agentically(
+def use_native_web_browser(
     url: str, search_goal: str, model
 ) -> dict:
     """
-    Use Inspect AI's web_browser tool agentically.
-    Save all pages that are loaded.
+    Use NATIVE Playwright with structured outputs for browser navigation.
+    LLM decides actions, Pydantic executes with Playwright.
     """
-    print(f"\n[Web Browser Tool] Using agentically...")
+    from native_web_browser import browse_with_llm
+
+    print(f"\n[Native Web Browser] Starting...")
     print(f"  URL: {url}")
     print(f"  Goal: {search_goal}")
 
-    # Create task with web_browser tools
-    @task
-    def browser_task():
-        return Task(
-            dataset=[
-                Sample(
-                    input=f"""Navigate to {url} and find: {search_goal}
-
-Use the web browser tools to navigate and extract the information.""",
-                    target="",
-                )
-            ],
-            solver=[use_tools(web_browser()), generate()],
-            config=GenerateConfig(max_tokens=2048),
-        )
-
-    # Execute (eval is synchronous, not async!)
-    log = eval(browser_task(), model=model)[0]
-
-    # Extract all pages visited from tool calls
-    pages_visited = []
-    if log.samples[0].messages:
-        for msg in log.samples[0].messages:
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    if hasattr(tc, "function") and "go" in tc.function:
-                        # Save this page
-                        pages_visited.append(tc)
+    # Use native browser implementation
+    result = browse_with_llm(
+        url=url,
+        goal=search_goal,
+        model=model,
+        max_actions=15,
+        storage_dir=STORAGE / "native_browser",
+    )
 
     # Save results
     results_file = STORAGE / "step5_browser_tool_results.json"
@@ -390,19 +372,19 @@ Use the web browser tools to navigate and extract the information.""",
             {
                 "url": url,
                 "goal": search_goal,
-                "completion": log.samples[0].output.completion,
-                "pages_visited": len(pages_visited),
+                "completion": result["final_result"],
+                "actions_taken": result["actions_taken"],
             },
             f,
             indent=2,
         )
 
-    print(f"  ✓ Visited {len(pages_visited)} pages")
+    print(f"  ✓ Actions taken: {result['actions_taken']}")
     print(f"  ✓ Results saved: {results_file}")
 
     return {
-        "completion": log.samples[0].output.completion,
-        "pages_visited": pages_visited,
+        "completion": result["final_result"],
+        "actions_taken": result["actions_taken"],
     }
 
 
@@ -595,8 +577,8 @@ Make your decision.""",
         context_for_extraction = f"Text search results: {json.dumps(search_results, indent=2)}"
 
     else:
-        # Use web browser tool agentically (even in MOCK_MODE!)
-        browser_results = use_web_browser_tool_agentically(
+        # Use NATIVE web browser (Playwright + structured outputs)
+        browser_results = use_native_web_browser(
             step3.selected_url,
             "Find h-index, citations, publications",
             model,
