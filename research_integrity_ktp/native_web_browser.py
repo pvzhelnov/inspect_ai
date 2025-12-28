@@ -421,9 +421,28 @@ def browse_with_llm(
 
             print(f"\n  [Action {action_count}] Asking LLM for next action...")
 
-            # Build prompt with current tree + available actions
-            prompt = f"""You are browsing a web page to: {goal}
+            # Build action history summary for context
+            history_summary = ""
+            if action_history:
+                history_summary = "\n\nActions taken so far:\n"
+                for i, prev_action in enumerate(action_history[-5:], 1):  # Last 5 actions
+                    action_type = prev_action.get("action", "unknown")
+                    if action_type == "go":
+                        history_summary += f"{i}. Navigated to: {prev_action.get('url', 'N/A')}\n"
+                    elif action_type == "click":
+                        history_summary += f"{i}. Clicked element #{prev_action.get('element_id', 'N/A')}\n"
+                    elif action_type == "type":
+                        history_summary += f"{i}. Typed '{prev_action.get('text', 'N/A')}' into element #{prev_action.get('element_id', 'N/A')}\n"
+                    elif action_type == "type_submit":
+                        history_summary += f"{i}. Typed and submitted '{prev_action.get('text', 'N/A')}' in element #{prev_action.get('element_id', 'N/A')}\n"
+                    elif action_type == "scroll":
+                        history_summary += f"{i}. Scrolled {prev_action.get('direction', 'N/A')}\n"
+                    elif action_type == "back":
+                        history_summary += f"{i}. Went back\n"
 
+            # Build prompt with action history + current tree + available actions
+            prompt = f"""You are browsing a web page to: {goal}
+{history_summary}
 Current page accessibility tree:
 {tree[:2000]}  # Truncate for context
 
@@ -436,7 +455,7 @@ Available actions:
 - back: Go back
 - done: Task complete, provide result
 
-Choose your next action."""
+Based on your previous actions and the current page, choose your next action."""
 
             # Get LLM decision
             @task

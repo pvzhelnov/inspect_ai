@@ -64,13 +64,13 @@ class MockResponse(BaseModel):
 
 MOCK_FIXTURES = {
     "Step1_Planning": {
-        "target_website": "CERN Info",
-        "search_query": "web information",
-        "rationale": "First website with navigation elements for testing",
+        "target_website": "Nobel Prize",
+        "search_query": "Geoffrey Hinton Nobel Prize",
+        "rationale": "Nobel Prize website has comprehensive researcher information",
     },
     "Step2_URLSelection": {
-        "selected_url": "http://info.cern.ch",
-        "rationale": "Historical website with links and navigation for testing browser",
+        "selected_url": "https://www.nobelprize.org/prizes/physics/2024/hinton/facts/",
+        "rationale": "Official Nobel Prize page with detailed researcher biography",
     },
     "Step4_StrategyDecision": {
         "strategy": "web_browser_tool",
