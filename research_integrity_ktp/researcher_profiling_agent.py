@@ -344,22 +344,22 @@ def text_search_in_html(html_content: str, patterns: list[str]) -> dict:
 
 
 def use_native_web_browser(
-    url: str, search_goal: str, model
+    url: str, research_context: str, model
 ) -> dict:
     """
     Use NATIVE Playwright with structured outputs for browser navigation.
-    LLM decides actions, Pydantic executes with Playwright.
+    LLM decides actions with full research context, Pydantic executes with Playwright.
     """
     from native_web_browser import browse_with_llm
 
     print(f"\n[Native Web Browser] Starting...")
     print(f"  URL: {url}")
-    print(f"  Goal: {search_goal}")
+    print(f"  Context: Research mission with Tavily results")
 
     # Use native browser implementation
     result = browse_with_llm(
         url=url,
-        goal=search_goal,
+        goal=research_context,  # Pass full context as goal
         model=model,
         max_actions=15,
         storage_dir=STORAGE / "native_browser",
@@ -578,10 +578,36 @@ Make your decision.""",
 
     else:
         # Use NATIVE web browser (Playwright + structured outputs)
+        # Build full research context
+        research_context = f"""RESEARCH MISSION:
+Searching for: {step1.search_query}
+Target website: {step1.target_website}
+Rationale: {step1.rationale}
+
+TAVILY SEARCH RESULTS:
+Found {len(step2_search.results_)} results suggesting this researcher has:
+- Academic profiles on various sites
+- Publications and citations data
+- Institutional affiliations
+
+SELECTED URL:
+{step3.selected_url}
+Selection rationale: {step3.rationale}
+
+YOUR TASK:
+Navigate this page to find and extract:
+1. h-index (citation metric)
+2. Total citations
+3. Top publications/papers
+4. Current affiliation(s)
+5. Research areas
+
+Use the page navigation to find this information."""
+
         browser_results = use_native_web_browser(
-            step3.selected_url,
-            "Find h-index, citations, publications",
-            model,
+            url=step3.selected_url,
+            research_context=research_context,
+            model=model,
         )
         context_for_extraction = f"Browser tool results: {browser_results['completion']}"
 
