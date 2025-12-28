@@ -64,13 +64,13 @@ class MockResponse(BaseModel):
 
 MOCK_FIXTURES = {
     "Step1_Planning": {
-        "target_website": "Google Scholar",
-        "search_query": "Geoffrey Hinton Google Scholar profile",
-        "rationale": "Google Scholar provides comprehensive citation metrics",
+        "target_website": "Example Academic Site",
+        "search_query": "Geoffrey Hinton academic profile",
+        "rationale": "Academic site provides comprehensive citation metrics",
     },
     "Step2_URLSelection": {
-        "selected_url": "https://scholar.google.com/citations?user=JicYPdAAAAAJ",
-        "rationale": "Official Google Scholar profile with complete metrics",
+        "selected_url": "http://example.com",
+        "rationale": "Academic profile page with complete metrics",
     },
     "Step4_StrategyDecision": {
         "strategy": "text_search",
@@ -230,8 +230,14 @@ async def capture_page_with_playwright(url: str) -> dict:
     print(f"  URL: {url}")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        page = await browser.new_page()
+        browser = await p.chromium.launch(
+            args=['--no-sandbox', '--disable-setuid-sandbox']
+        )
+        context = await browser.new_context(
+            ignore_https_errors=True,
+            bypass_csp=True
+        )
+        page = await context.new_page()
 
         try:
             # Navigate
@@ -524,25 +530,17 @@ def run_pipeline():
     print("\n[STEP 4] Playwright Capture")
     print("-" * 70)
 
-    # Execute ACTUAL Playwright capture (even in mock mode!)
+    # Execute ACTUAL Playwright capture (always - even in mock mode!)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            capture_result = loop.run_until_complete(capture_page_with_playwright(step3.selected_url))
-            page_capture = {
-                "screenshot_b64": capture_result["screenshot_b64"],
-                "html_content": capture_result["html_content"],
-            }
-        finally:
-            loop.close()
-    except Exception as e:
-        print(f"  ✗ Playwright capture failed: {e}")
-        print("  Using fallback mock HTML")
+        capture_result = loop.run_until_complete(capture_page_with_playwright(step3.selected_url))
         page_capture = {
-            "screenshot_b64": "mock_base64_fallback",
-            "html_content": "<html><body>Mock HTML (Playwright failed)</body></html>",
+            "screenshot_b64": capture_result["screenshot_b64"],
+            "html_content": capture_result["html_content"],
         }
+    finally:
+        loop.close()
 
     # STEP 5: Strategy decision (based on screenshot)
     print("\n[STEP 5] Strategy Decision (based on screenshot)")
