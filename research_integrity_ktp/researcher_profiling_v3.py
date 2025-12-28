@@ -155,7 +155,7 @@ Decide:
                 json_schema=json_schema(Step1_Planning),
                 strict=True,
             ),
-            max_tokens=256,
+            max_tokens=1024,
         )
 
         planning = Step1_Planning.model_validate_json(state.output.completion)
@@ -232,7 +232,7 @@ Choose the most promising URL for finding researcher profile information."""
                 json_schema=json_schema(Step3_URLSelection),
                 strict=True,
             ),
-            max_tokens=256,
+            max_tokens=512,
         )
 
         url_selection = Step3_URLSelection.model_validate_json(state.output.completion)
@@ -362,7 +362,7 @@ Choose the best approach."""
                 json_schema=json_schema(Step4_StrategyDecision),
                 strict=True,
             ),
-            max_tokens=512,
+            max_tokens=1024,
         )
 
         strategy = Step4_StrategyDecision.model_validate_json(state.output.completion)
@@ -498,7 +498,7 @@ Choose next action:"""
                         },
                         strict=True,
                     ),
-                    max_tokens=512,
+                    max_tokens=1024,
                 )
 
                 # Parse and execute
