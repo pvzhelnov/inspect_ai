@@ -635,8 +635,12 @@ Based on your previous actions and the current page, choose your next action."""
 
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    
+    load_dotenv()
+
     # Test with example.com
-    model = get_model("openrouter/qwen/qwen3-coder:free")
+    model = get_model("openai-api/llama-cpp/google/gemma-3-4b-it-qat-q4_0-gguf")
 
     result = browse_with_llm(
         url="http://example.com",
