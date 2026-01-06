@@ -2,39 +2,44 @@
 """
 Native web browser implementation using Playwright + structured outputs.
 
-Reimplements Inspect AI's web_browser tools but using:
-- NATIVE Playwright for all browser operations
-- Structured outputs for LLM decisions
-- Pydantic @model_validator for execution
-- Accessibility tree extraction from Playwright
+Refactored to use the Docker-based web browser implementation from:
+inspect_ai/docker/aisiuk/inspect-web-browser-tool/web_browser
 
 Architecture:
-1. Launch Playwright browser
-2. Navigate to URL, get accessibility tree
-3. LLM sees tree + menu of actions
-4. LLM outputs structured decision
-5. Pydantic executes action with Playwright
-6. Get new tree, back to step 3
-7. Repeat until LLM outputs "done"
-
-Usage:
-    from native_web_browser import BrowserSession, browse_with_llm
-
-    result = browse_with_llm(
-        url="http://example.com",
-        goal="Find h-index and citations",
-        model=model,
-    )
+1. Launch Playwright browser (using PlaywrightBrowser from docker tool)
+2. Create PlaywrightCrawler
+3. Navigate to URL, get accessibility tree (using render_at)
+4. LLM sees tree + menu of actions
+5. LLM outputs structured decision
+6. Execute action using crawler methods
+7. Get new tree, back to step 4
+8. Repeat until LLM outputs "done"
 """
 
 import asyncio
 import json
-import re
+import sys
 from pathlib import Path
 from typing import Literal, Union
 
-from playwright.async_api import Page, async_playwright
-from pydantic import BaseModel, Field, model_validator, RootModel
+# Add the web_browser directory to sys.path
+# We find the relative path from this file
+current_file = Path(__file__).resolve()
+# Go up 4 levels to reach 'inspect_ai' root from 'inspect_ai/research_integrity_ktp/utils/native_web_browser.py'
+project_root = current_file.parents[3]
+web_browser_path = project_root / "inspect_ai/docker/aisiuk/inspect-web-browser-tool/web_browser"
+
+if str(web_browser_path) not in sys.path:
+    sys.path.append(str(web_browser_path))
+
+try:
+    from playwright_browser import PlaywrightBrowser
+    from playwright_crawler import PlaywrightCrawler
+    # cdp module is inside the web_browser directory, so it should be importable
+except ImportError as e:
+    raise ImportError(f"Failed to import web_browser modules from {web_browser_path}. Error: {e}")
+
+from pydantic import BaseModel, Field, RootModel, create_model
 
 from inspect_ai import Task, eval, task
 from inspect_ai.dataset import Sample
@@ -43,172 +48,15 @@ from inspect_ai.solver import generate
 from inspect_ai.util import json_schema, JSONSchemaDict
 
 
-# ============================================================================
-# Accessibility tree extraction from Playwright
-# ============================================================================
-
-
-async def get_accessibility_tree(page: Page) -> str:
-    """
-    Extract accessibility tree from Playwright page using JavaScript evaluation.
-    Returns ONLY VISIBLE elements - critical for scroll to work!
-    """
-    # Use JavaScript to extract VISIBLE interactive elements
-    elements = await page.evaluate("""
-        () => {
-            const elements = [];
-            let id = 1;
-
-            // Helper to check if element is visible in viewport
-            function isVisible(el) {
-                const rect = el.getBoundingClientRect();
-                const windowHeight = window.innerHeight || document.documentElement.clientHeight;
-                const windowWidth = window.innerWidth || document.documentElement.clientWidth;
-
-                // Check if element is in viewport
-                const vertInView = (rect.top <= windowHeight) && ((rect.top + rect.height) >= 0);
-                const horInView = (rect.left <= windowWidth) && ((rect.left + rect.width) >= 0);
-
-                // Check if element has size and is not hidden
-                const hasSize = rect.width > 0 && rect.height > 0;
-                const notHidden = window.getComputedStyle(el).visibility !== 'hidden' &&
-                                  window.getComputedStyle(el).display !== 'none';
-
-                return vertInView && horInView && hasSize && notHidden;
-            }
-
-            // Helper to get visible text
-            function getVisibleText(el) {
-                const text = el.innerText || el.textContent || '';
-                return text.trim().slice(0, 100);  // Limit length
-            }
-
-            // Extract links (ONLY VISIBLE ONES!)
-            document.querySelectorAll('a[href]').forEach(el => {
-                if (isVisible(el)) {
-                    const text = getVisibleText(el);
-                    if (text) {
-                        elements.push({
-                            id: id++,
-                            role: 'link',
-                            name: text,
-                            href: el.href
-                        });
-                    }
-                }
-            });
-
-            // Extract buttons (ONLY VISIBLE!)
-            document.querySelectorAll('button, input[type="button"], input[type="submit"]').forEach(el => {
-                if (isVisible(el)) {
-                    const text = getVisibleText(el) || el.value || el.getAttribute('aria-label') || '';
-                    if (text) {
-                        elements.push({
-                            id: id++,
-                            role: 'button',
-                            name: text
-                        });
-                    }
-                }
-            });
-
-            // Extract input fields (ONLY VISIBLE!)
-            document.querySelectorAll('input:not([type="button"]):not([type="submit"]), textarea').forEach(el => {
-                if (isVisible(el)) {
-                    const label = el.getAttribute('aria-label') || el.placeholder || el.name || '';
-                    elements.push({
-                        id: id++,
-                        role: 'input',
-                        name: label,
-                        type: el.type || 'text',
-                        value: el.value || ''
-                    });
-                }
-            });
-
-            // Extract headings (ONLY VISIBLE!)
-            document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
-                if (isVisible(el)) {
-                    const text = getVisibleText(el);
-                    if (text) {
-                        elements.push({
-                            id: id++,
-                            role: el.tagName.toLowerCase(),
-                            name: text
-                        });
-                    }
-                }
-            });
-
-            // Extract select elements (ONLY VISIBLE!)
-            document.querySelectorAll('select').forEach(el => {
-                if (isVisible(el)) {
-                    const label = el.getAttribute('aria-label') || el.name || '';
-                    elements.push({
-                        id: id++,
-                        role: 'select',
-                        name: label
-                    });
-                }
-            });
-
-            return elements;
-        }
-    """)
-
-    if not elements:
-        return "[No interactive elements found]"
-
-    # Format as text tree
-    lines = []
-    for elem in elements[:100]:  # Limit to first 100 elements
-        role = elem.get("role", "")
-        name = elem.get("name", "")
-        elem_id = elem.get("id", 0)
-
-        # Format line
-        if name:
-            line = f"[{elem_id}] {role} \"{name}\""
-        else:
-            line = f"[{elem_id}] {role}"
-
-        # Add properties
-        props = []
-        if "href" in elem:
-            props.append(f"href: {elem['href'][:50]}")
-        if "type" in elem:
-            props.append(f"type: {elem['type']}")
-        if elem.get("value"):
-            props.append(f"value: {elem['value'][:50]}")
-
-        if props:
-            line += " [" + ", ".join(props) + "]"
-
-        lines.append(line)
-
-    return "\n".join(lines)
-
-
-async def find_element_by_id(page: Page, element_id: int) -> str | None:
-    """
-    Find element selector by ID from accessibility tree.
-
-    This is a simplified version - in production you'd maintain
-    a mapping from element_id to actual Playwright locators.
-    """
-    # For now, return a generic selector
-    # In production, you'd build this mapping during tree extraction
-    return f"[aria-label], [role], text={element_id}"
-
-
-# ============================================================================
+# ============================================================================ 
 # Browser action models with structured outputs
-# ============================================================================
+# ============================================================================ 
 
 
 class BrowserAction_Go(BaseModel):
     """LLM decides to navigate to a URL."""
 
+    reflection: str = Field(..., description="Reasoning for this action")
     action: Literal["go"] = "go"
     url: str = Field(..., description="URL to navigate to")
 
@@ -220,6 +68,7 @@ class BrowserAction_Go(BaseModel):
 class BrowserAction_Click(BaseModel):
     """LLM decides to click an element."""
 
+    reflection: str = Field(..., description="Reasoning for this action")
     action: Literal["click"] = "click"
     element_id: int = Field(..., description="ID of element to click")
 
@@ -231,6 +80,7 @@ class BrowserAction_Click(BaseModel):
 class BrowserAction_Type(BaseModel):
     """LLM decides to type into an element."""
 
+    reflection: str = Field(..., description="Reasoning for this action")
     action: Literal["type"] = "type"
     element_id: int = Field(..., description="ID of element to type into")
     text: str = Field(..., description="Text to type")
@@ -243,6 +93,7 @@ class BrowserAction_Type(BaseModel):
 class BrowserAction_TypeSubmit(BaseModel):
     """LLM decides to type and press ENTER."""
 
+    reflection: str = Field(..., description="Reasoning for this action")
     action: Literal["type_submit"] = "type_submit"
     element_id: int = Field(..., description="ID of element to type into")
     text: str = Field(..., description="Text to type before ENTER")
@@ -255,6 +106,7 @@ class BrowserAction_TypeSubmit(BaseModel):
 class BrowserAction_Scroll(BaseModel):
     """LLM decides to scroll."""
 
+    reflection: str = Field(..., description="Reasoning for this action")
     action: Literal["scroll"] = "scroll"
     direction: Literal["up", "down"] = Field(..., description="Scroll direction")
 
@@ -266,7 +118,30 @@ class BrowserAction_Scroll(BaseModel):
 class BrowserAction_Back(BaseModel):
     """LLM decides to go back."""
 
+    reflection: str = Field(..., description="Reasoning for this action")
     action: Literal["back"] = "back"
+
+    # Result populated after execution
+    accessibility_tree_: str = Field(default="", exclude=True)
+    screenshot_path_: Path | None = Field(default=None, exclude=True)
+
+
+class BrowserAction_Forward(BaseModel):
+    """LLM decides to go forward."""
+
+    reflection: str = Field(..., description="Reasoning for this action")
+    action: Literal["forward"] = "forward"
+
+    # Result populated after execution
+    accessibility_tree_: str = Field(default="", exclude=True)
+    screenshot_path_: Path | None = Field(default=None, exclude=True)
+
+
+class BrowserAction_Refresh(BaseModel):
+    """LLM decides to refresh the page."""
+
+    reflection: str = Field(..., description="Reasoning for this action")
+    action: Literal["refresh"] = "refresh"
 
     # Result populated after execution
     accessibility_tree_: str = Field(default="", exclude=True)
@@ -276,6 +151,7 @@ class BrowserAction_Back(BaseModel):
 class BrowserAction_Done(BaseModel):
     """LLM decides task is complete."""
 
+    reflection: str = Field(..., description="Reasoning for this action")
     action: Literal["done"] = "done"
     result: str = Field(..., description="Final result/answer")
 
@@ -289,95 +165,98 @@ class BrowserAction(RootModel):
     BrowserAction_TypeSubmit,
     BrowserAction_Scroll,
     BrowserAction_Back,
+    BrowserAction_Forward,
+    BrowserAction_Refresh,
     BrowserAction_Done,
 ] = Field(..., discriminator='action')
 
 
-# ============================================================================
+# ============================================================================ 
 # Browser session manager
-# ============================================================================
+# ============================================================================ 
 
 
 class BrowserSession:
     """
-    Manages a Playwright browser session.
-    Executes browser actions and extracts accessibility trees.
+    Manages a Playwright browser session using the Docker-based web browser tool implementation.
     """
 
     def __init__(self, storage_dir: Path):
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
-        self.browser = None
+        self.browser: PlaywrightBrowser | None = None
         self.context = None
-        self.page = None
+        self.crawler: PlaywrightCrawler | None = None
         self.action_counter = 0
 
     async def start(self):
-        """Launch browser."""
-        self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(
-            args=['--no-sandbox', '--disable-setuid-sandbox']
-        )
-        self.context = await self.browser.new_context(
-            ignore_https_errors=True,
-            bypass_csp=True,
-        )
-        self.page = await self.context.new_page()
+        """Launch browser and initialize crawler."""
+        # Initialize PlaywrightBrowser (this starts playwright and launches browser)
+        self.browser = await PlaywrightBrowser.create(headless=True)
+        
+        # Create a new context
+        self.context = await self.browser.get_new_context()
+        
+        # Initialize PlaywrightCrawler
+        self.crawler = await PlaywrightCrawler.create(self.context)
 
     async def execute_action(self, action: BrowserAction) -> str:
         """
         Execute browser action and return new accessibility tree.
         """
-        self.action_counter += 1
+        if not self.crawler:
+            raise RuntimeError("BrowserSession not started. Call start() first.")
 
+        self.action_counter += 1
+        page_crawler = await self.crawler.current_page
+        
+        # Execute action based on type
         if action.action == "go":
-            await self.page.goto(action.url, timeout=30000, wait_until='domcontentloaded')
+            await page_crawler.go_to_url(action.url)
 
         elif action.action == "click":
-            # Find element and click
-            # Simplified: use element_id as part of selector
-            # In production, maintain proper element_id -> locator mapping
-            await self.page.click(f"nth=0")  # Placeholder
+            await page_crawler.click(action.element_id)
 
         elif action.action == "type":
-            await self.page.fill(f"nth=0", action.text)  # Placeholder
+            await page_crawler.type(action.element_id, action.text)
 
         elif action.action == "type_submit":
-            await self.page.fill(f"nth=0", action.text)  # Placeholder
-            await self.page.press(f"nth=0", "Enter")
-
-        elif action.action == "scroll":
-            if action.direction == "down":
-                await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
-            else:
-                await self.page.evaluate("window.scrollBy(0, -window.innerHeight)")
-            # CRITICAL: Wait for lazy-loaded content after scroll!
-            await asyncio.sleep(1.0)  # Give time for content to load
+            await page_crawler.type(action.element_id, action.text)
+            await page_crawler.page.keyboard.press("Enter")
+            # Wait for navigation/load if needed, although page_crawler methods usually handle some waiting.
+            # Explicitly waiting for network idle can be safer for submissions
             try:
-                await self.page.wait_for_load_state('domcontentloaded', timeout=2000)
+                await page_crawler.page.wait_for_load_state('networkidle', timeout=5000)
             except:
                 pass
 
+        elif action.action == "scroll":
+            await page_crawler.scroll(action.direction)
+
         elif action.action == "back":
-            await self.page.go_back()
+            await page_crawler.back()
 
-        # Wait for page to settle
-        try:
-            await self.page.wait_for_load_state('networkidle', timeout=5000)
-        except:
-            pass
+        elif action.action == "forward":
+            await page_crawler.forward()
 
-        # Get new accessibility tree
-        tree = await get_accessibility_tree(self.page)
+        elif action.action == "refresh":
+            await page_crawler.refresh()
 
-        # Take screenshot
+        # Update the crawler's view of the page (accessibility tree)
+        await page_crawler.update()
+        
+        # Get accessibility tree and main content
+        tree = page_crawler.render_at()
+        main_content = page_crawler.render_main_content()
+
+        # Take screenshot using the underlying playwright page
         screenshot_path = self.storage_dir / f"action_{self.action_counter}_screenshot.png"
-        await self.page.screenshot(path=str(screenshot_path))
+        await page_crawler.page.screenshot(path=str(screenshot_path))
 
         # Save HTML dump
         html_path = self.storage_dir / f"action_{self.action_counter}_page.html"
-        html_content = await self.page.content()
+        html_content = await page_crawler.page.content()
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html_content)
 
@@ -386,39 +265,35 @@ class BrowserSession:
             action.accessibility_tree_ = tree
             action.screenshot_path_ = screenshot_path
 
-        return tree
-
+        return tree, main_content
+        
     async def close(self):
         """Close browser."""
-        if self.page:
-            await self.page.close()
-        if self.context:
-            await self.context.close()
         if self.browser:
             await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
 
 
-# ============================================================================
+# ============================================================================ 
 # Main browsing function with LLM loop
-# ============================================================================
+# ============================================================================ 
 
 
 def browse_with_llm(
     url: str,
     goal: str,
     model,
+    response_model: Type[BaseModel] | None = None,
     max_actions: int = 20,
     storage_dir: Path = Path("logs/native_browser"),
 ) -> dict:
     """
-    Browse a URL using LLM + Playwright.
+    Browse a URL using LLM + Playwright (Docker implementation).
 
     Args:
         url: Initial URL to visit
         goal: What to find/accomplish
         model: Inspect AI model
+        response_model: Optional Pydantic model for the final result
         max_actions: Maximum browser actions
         storage_dir: Where to save screenshots/HTML
 
@@ -436,10 +311,45 @@ def browse_with_llm(
     session = BrowserSession(storage_dir)
     loop.run_until_complete(session.start())
 
+    # Define Dynamic Action Model
+    if response_model:
+        # Create a new model that combines reflection/action with the user's response model
+        fields = {
+            "reflection": (str, Field(..., description="Reasoning for this action")),
+            "action": (Literal["done"], "done"),
+        }
+        # Add fields from response_model
+        for name, field_info in response_model.model_fields.items():
+             fields[name] = (field_info.annotation, field_info)
+        
+        DynamicDone = create_model(
+            "BrowserAction_Done",
+            **fields,
+        )
+    else:
+        DynamicDone = BrowserAction_Done
+
+    # Define the Union type dynamically
+    ActionUnion = Union[
+        BrowserAction_Go,
+        BrowserAction_Click,
+        BrowserAction_Type,
+        BrowserAction_TypeSubmit,
+        BrowserAction_Scroll,
+        BrowserAction_Back,
+        BrowserAction_Forward,
+        BrowserAction_Refresh,
+        DynamicDone,
+    ]
+    
+    # We use a RootModel to handle the discriminated union
+    class DynamicBrowserAction(RootModel):
+        root: ActionUnion = Field(..., discriminator='action')
+
     try:
         # Initial navigation
-        initial_action = BrowserAction_Go(url=url)
-        tree = loop.run_until_complete(session.execute_action(initial_action))
+        initial_action = BrowserAction_Go(url=url, reflection="Initial navigation")
+        tree, main_content = loop.run_until_complete(session.execute_action(initial_action))
 
         action_history = []
         action_count = 0
@@ -455,24 +365,38 @@ def browse_with_llm(
                 history_summary = "\n\nActions taken so far:\n"
                 for i, prev_action in enumerate(action_history[-5:], 1):  # Last 5 actions
                     action_type = prev_action.get("action", "unknown")
+                    reflection = prev_action.get("reflection", "No reflection")
+                    summary_line = f"{i}. [{action_type}] ({reflection}) "
+                    
                     if action_type == "go":
-                        history_summary += f"{i}. Navigated to: {prev_action.get('url', 'N/A')}\n"
+                        summary_line += f"Navigated to: {prev_action.get('url', 'N/A')}"
                     elif action_type == "click":
-                        history_summary += f"{i}. Clicked element #{prev_action.get('element_id', 'N/A')}\n"
+                        summary_line += f"Clicked element #{prev_action.get('element_id', 'N/A')}"
                     elif action_type == "type":
-                        history_summary += f"{i}. Typed '{prev_action.get('text', 'N/A')}' into element #{prev_action.get('element_id', 'N/A')}\n"
+                        summary_line += f"Typed '{prev_action.get('text', 'N/A')}' into element #{prev_action.get('element_id', 'N/A')}"
                     elif action_type == "type_submit":
-                        history_summary += f"{i}. Typed and submitted '{prev_action.get('text', 'N/A')}' in element #{prev_action.get('element_id', 'N/A')}\n"
+                        summary_line += f"Typed and submitted '{prev_action.get('text', 'N/A')}' in element #{prev_action.get('element_id', 'N/A')}"
                     elif action_type == "scroll":
-                        history_summary += f"{i}. Scrolled {prev_action.get('direction', 'N/A')}\n"
+                        summary_line += f"Scrolled {prev_action.get('direction', 'N/A')}"
                     elif action_type == "back":
-                        history_summary += f"{i}. Went back\n"
+                        summary_line += "Went back"
+                    elif action_type == "forward":
+                        summary_line += "Went forward"
+                    elif action_type == "refresh":
+                        summary_line += "Refreshed page"
+                    
+                    history_summary += summary_line + "\n"
+
+            # Prepare content context
+            content_context = ""
+            if main_content:
+                content_context += f"Main Content Summary:\n{main_content[:2000]}\n\n"
+            content_context += f"Current page accessibility tree:\n{tree[:2000]}  # Truncate for context"
 
             # Build prompt with action history + current tree + available actions
             prompt = f"""You are browsing a web page to: {goal}
 {history_summary}
-Current page accessibility tree:
-{tree[:2000]}  # Truncate for context
+{content_context}
 
 Available actions:
 - go: Navigate to a URL
@@ -481,15 +405,18 @@ Available actions:
 - type_submit: Type and press ENTER
 - scroll: Scroll up or down
 - back: Go back
+- forward: Go forward
+- refresh: Refresh page
 - done: Task complete, provide result
 
 Based on your previous actions and the current page, choose your next action.
+Always provide a 'reflection' first to explain your reasoning."""
 
-Your response MUST STRICTLY follow this JSON Schema:
+# Your response MUST STRICTLY follow this JSON Schema:
 
-```json
-{json.dumps(BrowserAction.model_json_schema())}
-```"""
+# ```json
+# {json.dumps(DynamicBrowserAction.model_json_schema())}
+# ```"""
 
             # Get LLM decision
             @task
@@ -500,10 +427,10 @@ Your response MUST STRICTLY follow this JSON Schema:
                     config=GenerateConfig(
                         response_schema=ResponseSchema(
                             name="BrowserAction",
-                            json_schema=JSONSchemaDict(BrowserAction.model_json_schema()),
+                            json_schema=JSONSchemaDict(DynamicBrowserAction.model_json_schema()),
                             strict=True,
                         ),
-                        max_tokens=512,
+                        max_tokens=1024, # Increased for reflection
                     ),
                 )
 
@@ -525,6 +452,7 @@ Your response MUST STRICTLY follow this JSON Schema:
                 print(f"  ✗ Value: {decision_json}")
                 print(f"  ✗ Cannot complete - LLM output is not structured correctly")
                 action = BrowserAction_Done(
+                    reflection="Error",
                     action="done",
                     result=f"Error: LLM returned {type(decision_json).__name__} instead of action object"
                 )
@@ -554,8 +482,8 @@ Your response MUST STRICTLY follow this JSON Schema:
             if action_type == "type" and "query" in decision_json:
                 decision_json["text"] = decision_json.pop("query")
 
-            # Normalize "reason" to "result" for done actions
-            if action_type == "done" and "reason" in decision_json:
+            # Normalize "reason" to "result" for done actions (only if not using custom model)
+            if action_type == "done" and not response_model and "reason" in decision_json:
                 decision_json["result"] = decision_json.pop("reason")
 
             # Normalize "element" to "element_id" for click/type actions
@@ -568,10 +496,17 @@ Your response MUST STRICTLY follow this JSON Schema:
                     decision_json["element_id"] = element_val
 
             if action_type == "done":
-                action = BrowserAction_Done(**decision_json)
-                print(f"  ✓ Task complete: {action.result}")
-                action_history.append(action.model_dump())
-                break
+                # Validate against DynamicDone
+                try:
+                    action = DynamicDone(**decision_json)
+                    print(f"  ✓ Task complete.")
+                    action_history.append(action.model_dump())
+                    break
+                except Exception as e:
+                    print(f"  ✗ Invalid 'done' action structure: {e}")
+                    # Try to fallback to generic done if possible, or just fail
+                    action_history.append({"action": "done", "error": str(e), "raw": decision_json})
+                    break
 
             # Create appropriate action object
             try:
@@ -587,6 +522,10 @@ Your response MUST STRICTLY follow this JSON Schema:
                     action = BrowserAction_Scroll(**decision_json)
                 elif action_type == "back":
                     action = BrowserAction_Back(**decision_json)
+                elif action_type == "forward":
+                    action = BrowserAction_Forward(**decision_json)
+                elif action_type == "refresh":
+                    action = BrowserAction_Refresh(**decision_json)
                 else:
                     print(f"  ✗ Unknown action: {action_type}")
                     break
@@ -595,17 +534,30 @@ Your response MUST STRICTLY follow this JSON Schema:
                 print(f"  ✗ Cannot complete task - no suitable elements found")
                 # Treat as "done" with error message
                 action = BrowserAction_Done(
+                    reflection="Error",
                     action="done",
                     result=f"Cannot complete: {str(e)}"
                 )
                 action_history.append(action.model_dump())
                 break
 
-            print(f"  ✓ Action: {action.action}")
+            print(f"  ✓ Action: {action.action} (Reflection: {action.reflection})")
 
-            # Execute action
-            tree = loop.run_until_complete(session.execute_action(action))
-            action_history.append(action.model_dump())
+            try:
+                # Execute action
+                tree, main_content = loop.run_until_complete(session.execute_action(action))
+                action_history.append(action.model_dump())
+            except Exception as e:
+                print(f"  ✗ Action execution failed: {e}")
+                # Don't break immediately, maybe retry or let LLM try something else?
+                # For now, let's record error and continue
+                error_action = BrowserAction_Done(
+                    reflection="Error execution",
+                    action="done", 
+                    result=f"Error executing action: {e}"
+                )
+                action_history.append(error_action.model_dump())
+                break
 
         # Save history
         history_file = storage_dir / "action_history.json"
@@ -614,11 +566,24 @@ Your response MUST STRICTLY follow this JSON Schema:
 
         print(f"\n  ✓ Session complete, {len(action_history)} actions")
         print(f"  ✓ History saved: {history_file}")
+        
+        # Determine final result
+        last_action = action_history[-1] if action_history else {}
+        if last_action.get("action") == "done":
+            if response_model:
+                # Filter out 'action' and 'reflection' to get just the result model fields
+                result_data = {k: v for k, v in last_action.items() if k not in ["action", "reflection"]}
+                # We can return the dict, or try to reconstruct the model if needed by caller
+                final_result = result_data
+            else:
+                final_result = last_action.get("result", "")
+        else:
+            final_result = ""
 
         return {
             "action_history": action_history,
             "actions_taken": len(action_history),
-            "final_result": action_history[-1].get("result", "") if action_history else "",
+            "final_result": final_result,
         }
 
     finally:
@@ -626,9 +591,9 @@ Your response MUST STRICTLY follow this JSON Schema:
         loop.close()
 
 
-# ============================================================================
+# ============================================================================ 
 # Test function
-# ============================================================================
+# ============================================================================ 
 
 
 if __name__ == "__main__":
@@ -637,13 +602,14 @@ if __name__ == "__main__":
     load_dotenv()
 
     # Test with example.com
-    model = get_model("openai-api/llama-cpp/google/gemma-3-4b-it-qat-q4_0-gguf")
+    # model = get_model("openai-api/llama-cpp/google/gemma-3-4b-it-qat-q4_0-gguf")
+    model = get_model("openai-api/llama-cpp/ggml-org/gpt-oss-20b-GGUF")
 
     result = browse_with_llm(
-        url="http://example.com",
-        goal="Read the page title and first paragraph",
+        url="http://google.com",
+        goal="Search for Geoffrey Hinton and return accurately his place of residence (country, city/town).",
         model=model,
-        max_actions=5,
+        max_actions=10,
     )
 
     print("\n" + "=" * 70)
