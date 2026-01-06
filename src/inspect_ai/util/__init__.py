@@ -28,7 +28,7 @@ from ._early_stopping import (
     EarlyStopping,
     EarlyStoppingSummary,
 )
-from ._json import JSONSchema, JSONType, json_schema
+from ._json import JSONSchema, JSONType, json_schema, JSONSchemaDict
 from ._panel import InputPanel, input_panel
 from ._resource import resource
 from ._sandbox import (

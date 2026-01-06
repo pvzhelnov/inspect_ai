@@ -21,11 +21,14 @@ from typing import (
     is_typeddict,
 )
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field, create_model, RootModel
 
 JSONType = Literal["string", "integer", "number", "boolean", "array", "object", "null"]
 """Valid types within JSON schema."""
 
+class JSONSchemaDict(RootModel[dict]):
+    """JSON Schema as a dict, e.g., from Pydantic `model_json_schema`."""
+    pass
 
 class JSONSchema(BaseModel):
     """JSON Schema for type."""

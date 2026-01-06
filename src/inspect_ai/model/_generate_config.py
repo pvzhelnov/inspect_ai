@@ -7,7 +7,7 @@ from typing_extensions import TypedDict
 
 from inspect_ai._util.constants import DEFAULT_BATCH_SIZE
 from inspect_ai.model._cache import CachePolicy
-from inspect_ai.util._json import JSONSchema
+from inspect_ai.util._json import JSONSchema, JSONSchemaDict
 
 
 class ResponseSchema(BaseModel):
@@ -16,8 +16,8 @@ class ResponseSchema(BaseModel):
     name: str
     """The name of the response schema. Must be a-z, A-Z, 0-9, or contain underscores and dashes, with a maximum length of 64."""
 
-    json_schema: JSONSchema
-    """The schema for the response format, described as a JSON Schema object."""
+    json_schema: JSONSchema | JSONSchemaDict
+    """The schema for the response format, described as a JSON Schema object or a dict (e.g., from Pydantic `model_json_schema`)."""
 
     description: str | None = Field(default=None)
     """A description of what the response format is for, used by the model to determine how to respond in the format."""
