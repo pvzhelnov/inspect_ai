@@ -31,16 +31,16 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Union
 
 from playwright.async_api import Page, async_playwright
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, RootModel
 
 from inspect_ai import Task, eval, task
 from inspect_ai.dataset import Sample
 from inspect_ai.model import GenerateConfig, ResponseSchema, get_model
 from inspect_ai.solver import generate
-from inspect_ai.util import json_schema
+from inspect_ai.util import json_schema, JSONSchemaDict
 
 
 # ============================================================================
@@ -281,15 +281,16 @@ class BrowserAction_Done(BaseModel):
 
 
 # Union type for all actions
-BrowserAction = (
-    BrowserAction_Go
-    | BrowserAction_Click
-    | BrowserAction_Type
-    | BrowserAction_TypeSubmit
-    | BrowserAction_Scroll
-    | BrowserAction_Back
-    | BrowserAction_Done
-)
+class BrowserAction(RootModel):
+    root: Union[
+    BrowserAction_Go,
+    BrowserAction_Click,
+    BrowserAction_Type,
+    BrowserAction_TypeSubmit,
+    BrowserAction_Scroll,
+    BrowserAction_Back,
+    BrowserAction_Done,
+] = Field(..., discriminator='action')
 
 
 # ============================================================================
@@ -482,7 +483,13 @@ Available actions:
 - back: Go back
 - done: Task complete, provide result
 
-Based on your previous actions and the current page, choose your next action."""
+Based on your previous actions and the current page, choose your next action.
+
+Your response MUST STRICTLY follow this JSON Schema:
+
+```json
+{json.dumps(BrowserAction.model_json_schema())}
+```"""
 
             # Get LLM decision
             @task
@@ -493,17 +500,7 @@ Based on your previous actions and the current page, choose your next action."""
                     config=GenerateConfig(
                         response_schema=ResponseSchema(
                             name="BrowserAction",
-                            json_schema={
-                                "oneOf": [
-                                    json_schema(BrowserAction_Go),
-                                    json_schema(BrowserAction_Click),
-                                    json_schema(BrowserAction_Type),
-                                    json_schema(BrowserAction_TypeSubmit),
-                                    json_schema(BrowserAction_Scroll),
-                                    json_schema(BrowserAction_Back),
-                                    json_schema(BrowserAction_Done),
-                                ]
-                            },
+                            json_schema=JSONSchemaDict(BrowserAction.model_json_schema()),
                             strict=True,
                         ),
                         max_tokens=512,
