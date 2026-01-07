@@ -10,23 +10,26 @@ import asyncio
 import re
 import sys
 import logging
+import json
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Type, Union
+from typing import Dict, Optional, Tuple, Type, Union, Literal
 
 from pydantic import BaseModel, Field
 
 # Inspect AI imports
 from inspect_ai import Task, eval, task
+from inspect_ai.agent import Agent, AgentState, agent
 from inspect_ai.dataset import Sample
-from inspect_ai.model import GenerateConfig, ResponseSchema, get_model
+from inspect_ai.model import GenerateConfig, ResponseSchema, get_model, ChatMessageUser
 from inspect_ai.solver import generate, system_message, use_tools
-from inspect_ai.tool import Tool, ToolError, ToolResult, tool
+from inspect_ai.tool import Tool, ToolError, ToolResult, tool, web_search
 from inspect_ai.tool._tool_call import ToolCall, ToolCallContent, ToolCallView
 from inspect_ai.tool._tool_info import parse_tool_info
 from inspect_ai.tool._tool_with import tool_with
 from inspect_ai.util._store_model import StoreModel, store_as
 from inspect_ai._util.content import ContentText
-from inspect_ai.util import json_schema
+from inspect_ai.util import json_schema, JSONSchemaDict
+from inspect_ai.log import read_eval_log
 
 # ============================================================================ 
 # Import Docker-based Browser Tool Implementation
@@ -37,6 +40,9 @@ current_file = Path(__file__).resolve()
 # to 'inspect_ai' root (which contains 'docker' folder)
 project_root = current_file.parents[3] 
 web_browser_path = project_root / "inspect_ai/docker/aisiuk/inspect-web-browser-tool/web_browser"
+
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 if str(web_browser_path) not in sys.path:
     sys.path.append(str(web_browser_path))
@@ -373,28 +379,61 @@ async def _web_browser_cmd(
 # ============================================================================ 
 
 if __name__ == "__main__":
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import inspect
+
     from dotenv import load_dotenv
     load_dotenv()
+
+    STORAGE = "inspect_ai/research_integrity_ktp/test_logs"
+
+    if str(current_file.parents[2]) not in sys.path:
+        sys.path.append(str(current_file.parents[2]))
+
+    from research_integrity_ktp.run import Step2_TavilySearch
+
+    MODEL=get_model("openai-api/llama-cpp/ggml-org/gpt-oss-20b-GGUF")
+    #MODEL=get_model("openai-api/llama-cpp/google/gemma-3-4b-it-qat-q4_0-gguf")
+    #MODEL=get_model("openai-api/llama-cpp/google/gemma-3-12b-it-qat-q4_0-gguf")
     
     # 1. Define Structured Output Model for Final Result
     class PageSummary(BaseModel):
-        title: str = Field(description="Title of the page")
-        first_paragraph: str = Field(description="First paragraph text")
+        reasoning_setting: Literal["high"]
+        reflection: str = Field(..., description="Reflection as to the task and context available, how to solve it, etc. It must be as long and as thorough as dictated by the `reasoning_setting`.")
+        country: str | None = Field(..., description="country 2-letter code in ISO format")
+        location: tuple[float, float] | tuple[None, None] = Field(..., description="approximate but accurate gps coordinates of the exact place")
+
+    @tool
+    def native_tavily_search():
+        async def execute(query: str):
+            """
+            Search for query in Tavily API.
+
+            Args:
+                query: Search query
+
+            Returns:
+                List of strings containing results.
+            """
+            step_2_tavily_search = Step2_TavilySearch(query=query)
+            return step_2_tavily_search.results_
+        return execute
         
     # 2. Define the Task
     @task
     def browser_test_task():
         return Task(
             dataset=[Sample(
-                input="Go to http://example.com and read the page title and first paragraph.",
-                target="Example Domain"
+                input=f"Search for Geoffrey Hinton and return accurately his place of residence (country, city/town). Note that we are not interested in private data, rather we are interested where they work, so the location of work. We are interested in CURRENT workplace, as of {datetime.now(ZoneInfo("America/Toronto")).year}.",
+                target=""
             )],
             solver=[
-                system_message("Use the web browser to find the information requested."),
-                use_tools(web_browser(headless=True)),
+                system_message("IF THE ANSWER IS NOT IN THE CONTEXT, NEVER INFER OR ASSUME. ALWAYS ONLY STATE BASED ON THE INFORMATION AVAILABLE IN THE CONTEXT."),
+                use_tools(web_browser(headless=True), native_tavily_search()),
                 generate()
             ],
-            model=get_model("openai-api/llama-cpp/google/gemma-3-4b-it-qat-q4_0-gguf"),
+            model=MODEL,
             config=GenerateConfig(max_tokens=1024),
         )
 
@@ -403,33 +442,67 @@ if __name__ == "__main__":
     print("="*50)
 
     # 3. Run Eval
-    logs = eval(browser_test_task(), limit=1) 
+    #logs = eval(browser_test_task(), limit=1)
+    logs = [read_eval_log("/Volumes/home/aicode/research_integrity_ktp_agent/logs/2026-01-07T19-59-56+00-00_browser-test-task_EAMZgFP6pmgihDv4fSeEP6.eval")]
+
     
     # 4. Extract Final Result from Log and Structure it
     if logs and logs[0].samples:
         log = logs[0]
         sample_result = log.samples[0].output.completion
         print(f"\n[Raw Agent Output]:\n{sample_result}\n")
-        
+
         print("-" * 50)
         print("Structuring Result with LLM...")
-        
-        # Helper task for structuring
-        @task
-        def structure_result_task():
-            return Task(
-                dataset=[Sample(input=sample_result, target="")],
-                solver=generate(),
-                config=GenerateConfig(
-                    response_schema=ResponseSchema(
-                        name="PageSummary",
-                        json_schema=json_schema(PageSummary),
-                        strict=True,
-                    )
+
+        prompt = f"""Extract structured data from the following text snippet:
+
+```text
+{sample_result}
+```
+
+You may use previous conversation history as context for the snippet.
+
+Your response must be a JSON and nothing else, valid under the following Pydantic model:
+
+```python
+{inspect.getsource(PageSummary)}
+```
+"""
+
+        @agent
+        def sgr_agent() -> Agent:
+            async def execute(state: AgentState) -> AgentState:
+                state.messages.extend([msg for msg in log.samples[0].messages if msg.role in ("user", "assistant")])
+                
+                state.messages.append(ChatMessageUser(content=prompt))
+
+                # run a tool loop w/ the web_browser then update & return state
+                messages, state.output = await get_model().generate_loop(
+                    input=state.messages,
                 )
+
+                state.messages.extend(messages)
+                return state
+
+            return execute
+        
+        @task
+        def researcher_profiling_task():
+            """
+            Complete researcher profiling in ONE eval log!
+            Each step is a separate solver, all chained together.
+            """
+            return Task(
+                dataset=[
+                    Sample(
+                        input="Geoffrey Hinton",
+                    )
+                ],
+                solver=sgr_agent(),
             )
-            
-        struct_logs = eval(structure_result_task(), model=get_model("openai-api/llama-cpp/google/gemma-3-4b-it-qat-q4_0-gguf"))
+
+        struct_logs = eval(researcher_profiling_task(), model=MODEL)
         structured_output = struct_logs[0].samples[0].output.completion
         
         print(f"\n[Structured Result]:\n{structured_output}")
