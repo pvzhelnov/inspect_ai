@@ -7,7 +7,7 @@ from typing_extensions import TypedDict
 
 from inspect_ai._util.constants import DEFAULT_BATCH_SIZE
 from inspect_ai.model._cache import CachePolicy
-from inspect_ai.util._json import JSONSchema
+from inspect_ai.util._json import JSONSchema, JSONSchemaDict
 
 
 class ResponseSchema(BaseModel):
@@ -16,8 +16,8 @@ class ResponseSchema(BaseModel):
     name: str
     """The name of the response schema. Must be a-z, A-Z, 0-9, or contain underscores and dashes, with a maximum length of 64."""
 
-    json_schema: JSONSchema
-    """The schema for the response format, described as a JSON Schema object."""
+    json_schema: JSONSchema | JSONSchemaDict
+    """The schema for the response format, described as a JSON Schema object or a dict (e.g., from Pydantic `model_json_schema`)."""
 
     description: str | None = Field(default=None)
     """A description of what the response format is for, used by the model to determine how to respond in the format."""
@@ -122,7 +122,15 @@ class GenerateConfigArgs(TypedDict, total=False):
     cache_prompt: Literal["auto"] | bool | None
     """Whether to cache the prompt prefix. Defaults to "auto", which will enable caching for requests with tools. Anthropic only."""
 
-    reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None
+    verbosity: Literal["low", "medium", "high"] | None
+    """Constrains the verbosity of the model's response. Lower values will result in more concise responses, while higher values will result in more verbose responses. GPT 5.x models only (defaults to "medium" for OpenAI models)."""
+
+    effort: Literal["low", "medium", "high"] | None
+    """Control how many tokens are used for a response, trading off between response thoroughness and token efficiency. Anthropic Claude 4.5 Opus only."""
+
+    reasoning_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None
+    )
     """Constrains effort on reasoning. Defaults vary by provider and model and not all models support all values (please consult provider documentation for details)."""
 
     reasoning_tokens: int | None
@@ -216,9 +224,15 @@ class GenerateConfig(BaseModel):
     cache_prompt: Literal["auto"] | bool | None = Field(default=None)
     """Whether to cache the prompt prefix. Defaults to "auto", which will enable caching for requests with tools. Anthropic only."""
 
-    reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = (
-        Field(default=None)
-    )
+    verbosity: Literal["low", "medium", "high"] | None = Field(default=None)
+    """Constrains the verbosity of the model's response. Lower values will result in more concise responses, while higher values will result in more verbose responses. GPT 5.x models only (defaults to "medium" for OpenAI models)."""
+
+    effort: Literal["low", "medium", "high"] | None = Field(default=None)
+    """Control how many tokens are used for a response, trading off between response thoroughness and token efficiency. Anthropic Claude 4.5 Opus only."""
+
+    reasoning_effort: (
+        Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None
+    ) = Field(default=None)
     """Constrains effort on reasoning. Defaults vary by provider and model and not all models support all values (please consult provider documentation for details)."""
 
     reasoning_tokens: int | None = Field(default=None)

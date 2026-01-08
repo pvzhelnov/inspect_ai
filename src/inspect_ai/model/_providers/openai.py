@@ -16,7 +16,6 @@ from openai.types.chat import ChatCompletion
 from openai.types.responses import Response
 from typing_extensions import override
 
-from inspect_ai._util.error import PrerequisiteError
 from inspect_ai._util.logger import warn_once
 from inspect_ai.model._generate_config import normalized_batch_config
 from inspect_ai.model._providers.openai_completions import (
@@ -40,17 +39,30 @@ from .._openai import (
 from .._openai_responses import is_native_tool_configured
 from ._openai_batch import OpenAIBatcher
 from .openai_o1 import generate_o1
-from .util import environment_prerequisite_error, model_base_url
+from .util import (
+    check_azure_deployment_mismatch,
+    environment_prerequisite_error,
+    model_base_url,
+    require_azure_base_url,
+    resolve_api_key,
+    resolve_azure_token_provider,
+)
 
 logger = getLogger(__name__)
 
 OPENAI_API_KEY = "OPENAI_API_KEY"
 AZURE_OPENAI_API_KEY = "AZURE_OPENAI_API_KEY"
 AZUREAI_OPENAI_API_KEY = "AZUREAI_OPENAI_API_KEY"
-AZUREAI_AUDIENCE = "AZUREAI_AUDIENCE"
+
+# Azure base URL environment variables
+AZURE_OPENAI_BASE_URL_VARS = [
+    "AZUREAI_OPENAI_BASE_URL",
+    "AZURE_OPENAI_BASE_URL",
+    "AZURE_OPENAI_ENDPOINT",
+]
 
 
-# NOTE: If you are creating a new provider that is OpenAI compatible you should inherit from OpenAICompatibleAPI rather than OpenAPAPI.
+# NOTE: If you are creating a new provider that is OpenAI compatible you should inherit from OpenAICompatibleAPI rather than OpenAIAPI.
 
 
 class OpenAIAPI(ModelAPI):
@@ -100,6 +112,15 @@ class OpenAIAPI(ModelAPI):
             config=config,
         )
 
+        # check for Azure model/URL mismatch
+        if self.is_azure():
+            check_azure_deployment_mismatch(
+                self.service_model_name(),
+                base_url,
+                AZURE_OPENAI_BASE_URL_VARS,
+                "AZUREAI_OPENAI",
+            )
+
         # set background bit (automatically use background for deep research)
         if background is None and (self.is_deep_research() or self.is_gpt_5_pro()):
             background = True
@@ -134,28 +155,12 @@ class OpenAIAPI(ModelAPI):
         self.token_provider = None
         if not self.api_key:
             if self.is_azure():
-                self.api_key = os.environ.get(
-                    AZUREAI_OPENAI_API_KEY, os.environ.get(AZURE_OPENAI_API_KEY, None)
+                self.api_key = resolve_api_key(
+                    [AZUREAI_OPENAI_API_KEY, AZURE_OPENAI_API_KEY]
                 )
                 if not self.api_key:
                     # try managed identity (Microsoft Entra ID)
-                    try:
-                        from azure.identity import (
-                            DefaultAzureCredential,
-                            get_bearer_token_provider,
-                        )
-
-                        self.token_provider = get_bearer_token_provider(
-                            DefaultAzureCredential(),
-                            os.environ.get(
-                                AZUREAI_AUDIENCE,
-                                "https://cognitiveservices.azure.com/.default",
-                            ),
-                        )
-                    except ImportError:
-                        raise PrerequisiteError(
-                            "ERROR: The OpenAI provider requires the `azure-identity` package for managed identity support."
-                        )
+                    self.token_provider = resolve_azure_token_provider("OpenAI")
             else:
                 self.api_key = os.environ.get(OPENAI_API_KEY, None)
 
@@ -195,20 +200,10 @@ class OpenAIAPI(ModelAPI):
     def _create_client(self) -> AsyncAzureOpenAI | AsyncOpenAI:
         # azure client
         if self.is_azure():
-            # resolve base_url
-            base_url = model_base_url(
-                self.base_url,
-                [
-                    "AZUREAI_OPENAI_BASE_URL",
-                    "AZURE_OPENAI_BASE_URL",
-                    "AZURE_OPENAI_ENDPOINT",
-                ],
+            # resolve base_url (required for Azure)
+            base_url = require_azure_base_url(
+                self.base_url, AZURE_OPENAI_BASE_URL_VARS, "OpenAI"
             )
-            if not base_url:
-                raise PrerequisiteError(
-                    "ERROR: You must provide a base URL when using OpenAI on Azure. Use the AZUREAI_OPENAI_BASE_URL "
-                    + "environment variable or the --model-base-url CLI flag to set the base URL."
-                )
 
             # use managed identity if available, otherwise API key
             return AsyncAzureOpenAI(
@@ -274,6 +269,10 @@ class OpenAIAPI(ModelAPI):
     def is_gpt_5(self) -> bool:
         name = self.service_model_name()
         return "gpt-5" in name
+
+    def is_gpt_5_plus(self) -> bool:
+        name = self.service_model_name()
+        return "gpt-5." in name
 
     def is_gpt_5_pro(self) -> bool:
         name = self.service_model_name()

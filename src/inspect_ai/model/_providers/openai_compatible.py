@@ -10,7 +10,11 @@ from openai import (
     UnprocessableEntityError,
 )
 from openai._types import NOT_GIVEN
-from openai.types.chat import ChatCompletion
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessageParam,
+    ChatCompletionToolParam,
+)
 from typing_extensions import override
 
 from inspect_ai.model._openai import chat_choices_from_openai
@@ -58,6 +62,7 @@ class OpenAICompatibleAPI(ModelAPI):
         emulate_tools: bool = False,
         responses_api: bool | None = None,
         responses_store: bool | None = None,
+        stream: bool | None = None,
         **model_args: Any,
     ) -> None:
         # extract service prefix from model name if not specified
@@ -110,6 +115,7 @@ class OpenAICompatibleAPI(ModelAPI):
             raise ValueError(
                 "emulate_tools is not compatible with using the responses_api"
             )
+        self.stream = False if stream is None else stream
 
         # store http_client and model_args for reinitialization
         self.http_client = model_args.pop("http_client", OpenAIAsyncHttpxClient())
@@ -201,8 +207,8 @@ class OpenAICompatibleAPI(ModelAPI):
             # prepare request (we do this so we can log the ModelCall)
             have_tools = (len(tools) > 0) and not self.emulate_tools
             request = dict(
-                messages=await messages_to_openai(input),
-                tools=openai_chat_tools(tools) if have_tools else NOT_GIVEN,
+                messages=await self.messages_to_openai(input),
+                tools=self.tools_to_openai(tools) if have_tools else NOT_GIVEN,
                 tool_choice=openai_chat_tool_choice(tool_choice)
                 if have_tools
                 else NOT_GIVEN,
@@ -245,9 +251,13 @@ class OpenAICompatibleAPI(ModelAPI):
     async def _generate_completion(
         self, request: dict[str, Any], config: GenerateConfig
     ) -> ChatCompletion:
-        return cast(
-            ChatCompletion, await self.client.chat.completions.create(**request)
-        )
+        if self.stream:
+            async with self.client.chat.completions.stream(**request) as stream:
+                return await stream.get_final_completion()
+        else:
+            return cast(
+                ChatCompletion, await self.client.chat.completions.create(**request)
+            )
 
     def service_model_name(self) -> str:
         """Model name without any service prefix."""
@@ -278,6 +288,15 @@ class OpenAICompatibleAPI(ModelAPI):
     def on_response(self, response: dict[str, Any]) -> None:
         """Hook for subclasses to do custom response handling."""
         pass
+
+    def tools_to_openai(self, tools: list[ToolInfo]) -> list[ChatCompletionToolParam]:
+        """Hook for subclasses to do custom tools processing"""
+        return openai_chat_tools(tools)
+
+    async def messages_to_openai(
+        self, input: list[ChatMessage]
+    ) -> list[ChatCompletionMessageParam]:
+        return await messages_to_openai(input)
 
     def chat_choices_from_completion(
         self, completion: ChatCompletion, tools: list[ToolInfo]
@@ -335,6 +354,9 @@ class ModelInfo(ResponsesModelInfo):
         return True
 
     def is_gpt(self) -> bool:
+        return False
+
+    def is_gpt_5_plus(self) -> bool:
         return False
 
     def is_gpt_5(self) -> bool:

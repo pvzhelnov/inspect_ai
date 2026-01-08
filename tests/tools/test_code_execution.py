@@ -4,6 +4,7 @@ from test_helpers.utils import (
     skip_if_no_docker,
     skip_if_no_google,
     skip_if_no_grok,
+    skip_if_no_mistral,
     skip_if_no_openai,
 )
 
@@ -77,6 +78,18 @@ def test_grok_code_execution_python() -> None:
     check_python_code_execution("grok", "grok-4-fast")
 
 
+@skip_if_no_mistral
+def test_mistral_code_execution() -> None:
+    check_code_execution("mistral/mistral-large-latest")
+
+
+@pytest.mark.slow
+@skip_if_no_mistral
+@skip_if_no_docker
+def test_mistral_code_execution_python() -> None:
+    check_python_code_execution("mistral", "mistral-large-latest")
+
+
 @skip_if_no_google
 def test_google_code_execution() -> None:
     check_code_execution("google/gemini-3-pro-preview")
@@ -86,7 +99,7 @@ def test_google_code_execution() -> None:
 @skip_if_no_google
 @skip_if_no_docker
 def test_google_code_execution_python() -> None:
-    check_python_code_execution("google", "gemini-3-pro-preview")
+    check_python_code_execution("google", "gemini-2.5-flash")
 
 
 @skip_if_no_openai
@@ -166,6 +179,7 @@ def test_normalize_config_disable_all_providers() -> None:
             "anthropic": False,
             "google": False,
             "grok": False,
+            "mistral": False,
             "python": False,
         }
     )

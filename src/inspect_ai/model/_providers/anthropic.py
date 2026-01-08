@@ -10,7 +10,6 @@ from typing import (
     Any,
     Iterable,
     Literal,
-    Optional,
     Sequence,
     Tuple,
     TypeGuard,
@@ -24,6 +23,7 @@ from anthropic import (
     APITimeoutError,
     AsyncAnthropic,
     AsyncAnthropicBedrock,
+    AsyncAnthropicFoundry,
     AsyncAnthropicVertex,
     BadRequestError,
     NotGiven,
@@ -69,6 +69,7 @@ from anthropic.types.beta import (
     BetaBashCodeExecutionToolResultBlock,
     BetaBashCodeExecutionToolResultBlockParam,
     BetaCodeExecutionTool20250825Param,
+    BetaDirectCaller,
     BetaMCPToolResultBlock,
     BetaMCPToolUseBlock,
     BetaMCPToolUseBlockParam,
@@ -82,6 +83,7 @@ from anthropic.types.beta import (
     BetaTextEditorCodeExecutionToolResultBlock,
     BetaTextEditorCodeExecutionToolResultBlockParam,
     BetaToolComputerUse20250124Param,
+    BetaToolComputerUse20251124Param,
     BetaToolTextEditor20241022Param,
     BetaToolTextEditor20250429Param,
     BetaToolTextEditor20250728Param,
@@ -118,6 +120,7 @@ from inspect_ai.model._internal import (
     content_internal_tag,
     parse_content_with_internal,
 )
+from inspect_ai.model._providers.util.util import split_system_messages
 from inspect_ai.model._retry import model_retry_config
 from inspect_ai.tool import ToolCall, ToolChoice, ToolFunction, ToolInfo
 from inspect_ai.tool._mcp._config import MCPServerConfigHTTP
@@ -125,7 +128,7 @@ from inspect_ai.tool._mcp._remote import is_mcp_server_tool
 from inspect_ai.util._json import set_additional_properties_false
 
 from ..._util.httpx import httpx_should_retry
-from .._chat_message import ChatMessage, ChatMessageAssistant, ChatMessageSystem
+from .._chat_message import ChatMessage, ChatMessageAssistant
 from .._generate_config import GenerateConfig, normalized_batch_config
 from .._model import ModelAPI, log_model_retry
 from .._model_call import ModelCall
@@ -135,12 +138,26 @@ from .._providers._anthropic_citations import (
     to_inspect_citation,
 )
 from ._anthropic_batch import AnthropicBatcher
-from .util import environment_prerequisite_error, model_base_url
+from .util import (
+    check_azure_deployment_mismatch,
+    environment_prerequisite_error,
+    model_base_url,
+    require_azure_base_url,
+    resolve_api_key,
+)
 from .util.hooks import HttpxHooks
 
 logger = getLogger(__name__)
 
 ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY"
+AZUREAI_ANTHROPIC_API_KEY = "AZUREAI_ANTHROPIC_API_KEY"
+AZURE_ANTHROPIC_API_KEY = "AZURE_ANTHROPIC_API_KEY"
+
+# Azure base URL environment variables
+AZURE_ANTHROPIC_BASE_URL_VARS = [
+    "AZUREAI_ANTHROPIC_BASE_URL",
+    "AZURE_ANTHROPIC_BASE_URL",
+]
 
 INTERNAL_COMPUTER_TOOL_NAME = "computer"
 
@@ -182,16 +199,34 @@ class AnthropicAPI(ModelAPI):
             model_name=model_name,
             base_url=base_url,
             api_key=api_key,
-            api_key_vars=[ANTHROPIC_API_KEY],
+            api_key_vars=[
+                ANTHROPIC_API_KEY,
+                AZUREAI_ANTHROPIC_API_KEY,
+                AZURE_ANTHROPIC_API_KEY,
+            ],
             config=config,
         )
+
+        # check for Azure model/URL mismatch
+        if self.is_azure():
+            check_azure_deployment_mismatch(
+                self.service_model_name(),
+                base_url,
+                AZURE_ANTHROPIC_BASE_URL_VARS,
+                "AZUREAI_ANTHROPIC",
+            )
 
         self.model_args = model_args
         self.initialize()
 
     def _create_client(
         self,
-    ) -> AsyncAnthropic | AsyncAnthropicBedrock | AsyncAnthropicVertex:
+    ) -> (
+        AsyncAnthropic
+        | AsyncAnthropicBedrock
+        | AsyncAnthropicVertex
+        | AsyncAnthropicFoundry
+    ):
         if self.is_bedrock():
             base_url = model_base_url(
                 self.base_url,
@@ -220,6 +255,28 @@ class AnthropicAPI(ModelAPI):
                 region=region,
                 project_id=project_id,
                 base_url=base_url,
+                **self.model_args,
+            )
+        elif self.is_azure():
+            # resolve base_url (required for Azure)
+            base_url = require_azure_base_url(
+                self.base_url, AZURE_ANTHROPIC_BASE_URL_VARS, "Anthropic"
+            )
+
+            # resolve api_key (required for Azure)
+            if not self.api_key:
+                self.api_key = resolve_api_key(
+                    [AZUREAI_ANTHROPIC_API_KEY, AZURE_ANTHROPIC_API_KEY]
+                )
+            if not self.api_key:
+                raise environment_prerequisite_error(
+                    "Anthropic on Azure",
+                    [AZUREAI_ANTHROPIC_API_KEY, AZURE_ANTHROPIC_API_KEY],
+                )
+
+            return AsyncAnthropicFoundry(
+                base_url=base_url,
+                api_key=self.api_key,
                 **self.model_args,
             )
         else:
@@ -251,6 +308,9 @@ class AnthropicAPI(ModelAPI):
 
     def is_vertex(self) -> bool:
         return self.service == "vertex"
+
+    def is_azure(self) -> bool:
+        return self.service == "azure"
 
     async def generate(
         self,
@@ -308,6 +368,10 @@ class AnthropicAPI(ModelAPI):
             # extra headers (for time tracker and computer use)
             extra_headers = headers | {HttpxHooks.REQUEST_ID_HEADER: request_id}
             if any(
+                tool.get("type", None) == "computer_20251124" for tool in tools_param
+            ):
+                betas.append("computer-use-2025-11-24")
+            elif any(
                 tool.get("type", None) == "computer_20250124" for tool in tools_param
             ):
                 # From: https://docs.anthropic.com/en/docs/agents-and-tools/computer-use#claude-3-7-sonnet-beta-flag
@@ -468,6 +532,11 @@ class AnthropicAPI(ModelAPI):
                 warn_once(logger, THINKING_WARNING.format(parameter="top_k"))
             else:
                 params["top_k"] = config.top_k
+
+        # effort
+        if config.effort is not None:
+            betas.append("effort-2025-11-24")
+            extra_body["output_config"] = {"effort": config.effort}
 
         # some thinking-only stuff
         if self.is_using_thinking(config):
@@ -681,7 +750,7 @@ class AnthropicAPI(ModelAPI):
         list[MessageParam],
     ]:
         # extract system message
-        system_messages, messages = split_system_messages(input, config)
+        system_messages, messages = split_system_messages(input)
 
         # messages
         message_params = [(await message_param(message)) for message in messages]
@@ -825,7 +894,7 @@ class AnthropicAPI(ModelAPI):
 
     def computer_use_tool_param(
         self, tool: ToolInfo
-    ) -> Optional[BetaToolComputerUse20250124Param]:
+    ) -> BetaToolComputerUse20250124Param | BetaToolComputerUse20251124Param | None:
         # check for compatible 'computer' tool
         if tool.name == "computer" and (
             sorted(tool.parameters.properties.keys())
@@ -834,6 +903,7 @@ class AnthropicAPI(ModelAPI):
                     "action",
                     "coordinate",
                     "duration",
+                    "region",
                     "scroll_amount",
                     "scroll_direction",
                     "start_coordinate",
@@ -847,19 +917,34 @@ class AnthropicAPI(ModelAPI):
                     "Use of Anthropic's native computer use support is not enabled in Claude 3.5. Please use 3.7 or later to leverage the native support.",
                 )
                 return None
-            return BetaToolComputerUse20250124Param(
-                type="computer_20250124",
-                name="computer",
-                # Note: The dimensions passed here for display_width_px and display_height_px should
-                # match the dimensions of screenshots returned by the tool.
-                # Those dimensions will always be one of the values in MAX_SCALING_TARGETS
-                # in _x11_client.py.
-                # TODO: enhance this code to calculate the dimensions based on the scaled screen
-                # size used by the container.
-                display_width_px=1366,
-                display_height_px=768,
-                display_number=1,
-            )
+            # Note: The dimensions passed here for display_width_px and display_height_px
+            # should match the dimensions of screenshots returned by the tool. Those
+            # dimensions will always be one of the values in MAX_SCALING_TARGETS
+            # in _x11_client.py. This default container is currently configured with
+            # a native display resolution of 1920x1080 and 1366x768 (FWXGA) as the
+            # screenshot/API resolution since this most closely matches that native
+            # 16:9 aspect ratio.
+            #
+            # TODO: enhance this code to calculate the dimensions based on the scaled screen
+            # size used by the container.
+            # computer_20251124 is only supported by Claude Opus 4.5
+            if self.is_claude_4_5() and self.is_claude_4_opus():
+                return BetaToolComputerUse20251124Param(
+                    type="computer_20251124",
+                    name="computer",
+                    display_width_px=1366,
+                    display_height_px=768,
+                    display_number=1,
+                    enable_zoom=True,
+                )
+            else:
+                return BetaToolComputerUse20250124Param(
+                    type="computer_20250124",
+                    name="computer",
+                    display_width_px=1366,
+                    display_height_px=768,
+                    display_number=1,
+                )
         # not a computer_use tool
         else:
             return None
@@ -875,7 +960,7 @@ class AnthropicAPI(ModelAPI):
     ):
         # See: https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/text-editor-tool#before-using-the-text-editor-tool
         # TODO: It would be great to enhance our `is_claude_xxx` functions to help here.
-        if self.model_name.startswith(("claude-3-5-haiku", "claude-3-opus")):
+        if self.service_model_name().startswith(("claude-3-5-haiku", "claude-3-opus")):
             return None
 
         # check for compatible 'text editor' tool
@@ -921,7 +1006,7 @@ class AnthropicAPI(ModelAPI):
             tool.name == "web_search"
             and tool.options
             and "anthropic" in tool.options
-            and _supports_web_search(self.model_name)
+            and _supports_web_search(self.service_model_name())
         ):
             return _web_search_tool_params(tool.options["anthropic"])
         else:
@@ -932,7 +1017,7 @@ class AnthropicAPI(ModelAPI):
     ) -> BetaCodeExecutionTool20250825Param | None:
         if (
             tool.name == "code_execution"
-            and _supports_web_search(self.model_name)
+            and _supports_code_interpreter(self.service_model_name())
             and tool.options
             and "anthropic" in tool.options.get("providers", {})
         ):
@@ -962,7 +1047,7 @@ class AnthropicAPI(ModelAPI):
             )
         ):
             # memory tool supported on Claude 4+ models
-            if _supports_memory(self.model_name):
+            if _supports_memory(self.service_model_name()):
                 return BetaMemoryTool20250818Param(
                     type="memory_20250818",
                     name="memory",
@@ -1054,6 +1139,7 @@ def _web_search_tool_params(
 ToolParamDef = (
     ToolParam
     | BetaToolComputerUse20250124Param
+    | BetaToolComputerUse20251124Param
     | ToolTextEditor20250124Param
     | BetaToolTextEditor20241022Param
     | BetaToolTextEditor20250429Param
@@ -1086,7 +1172,7 @@ def is_text_editor_tool(
 
 def is_computer_tool(
     param: ToolParamDef,
-) -> TypeGuard[BetaToolComputerUse20250124Param]:
+) -> TypeGuard[BetaToolComputerUse20250124Param | BetaToolComputerUse20251124Param]:
     return param.get("name") == "computer" and not is_tool_param(param)
 
 
@@ -1112,6 +1198,7 @@ def add_cache_control(
     param: TextBlockParam
     | ToolParam
     | BetaToolComputerUse20250124Param
+    | BetaToolComputerUse20251124Param
     | ToolTextEditor20250124Param
     | BetaToolTextEditor20241022Param
     | BetaToolTextEditor20250429Param
@@ -1314,7 +1401,16 @@ async def assistant_message_blocks(message: ChatMessageAssistant) -> list[Messag
         elif block_param["type"] == "tool_use":
             blocks.append(ToolUseBlock.model_validate(block_param))
         elif block_param["type"] == "server_tool_use":
-            blocks.append(BetaServerToolUseBlock.model_validate(block_param))
+            blocks.append(
+                BetaServerToolUseBlock(
+                    id=block_param["id"],
+                    caller=BetaDirectCaller(type="direct"),
+                    input=block_param["input"],
+                    name=block_param["name"],
+                    type=block_param["type"],
+                )
+            )
+
         elif block_param["type"] == "web_search_tool_result":
             blocks.append(WebSearchToolResultBlock.model_validate(block_param))
         elif block_param["type"] == "bash_code_execution_tool_result":
@@ -1382,7 +1478,9 @@ async def assistant_message_block_params(
 
 @dataclass
 class _AssistantInternal:
-    thinking_signatures: dict[str, str] = field(default_factory=dict)
+    thinking_blocks: dict[str, ThinkingBlockParam | RedactedThinkingBlockParam] = field(
+        default_factory=dict
+    )
     tool_call_internal_names: dict[str, str | None] = field(default_factory=dict)
     server_mcp_tool_uses: dict[
         str, tuple[BetaMCPToolUseBlockParam, BetaRequestMCPToolResultBlockParam]
@@ -1701,23 +1799,34 @@ def content_and_tool_calls_from_assistant_content_blocks(
                     else None,
                 )
             )
+
+        elif isinstance(content_block, ThinkingBlock):
+            # anthropic reasoning is now always a summary (save for Sonnet 3.7):
+            # https://platform.claude.com/docs/en/build-with-claude/extended-thinking#differences-in-thinking-across-model-versions
+            content.append(
+                ContentReasoning(
+                    summary=content_block.thinking,
+                    reasoning=content_block.signature,
+                    redacted=True,
+                )
+            )
+
+            # reasoning won't round trip through bridges w/ simplistic handling
+            # (e.g. OpenAI completions) so we also save for replay)
+            assistant_internal().thinking_blocks[mm3_hash(content_block.signature)] = (
+                cast(ThinkingBlockParam, content_block.model_dump(exclude_none=True))
+            )
+
         elif isinstance(content_block, RedactedThinkingBlock):
+            # redacted reasoning has no summary
             content.append(
                 ContentReasoning(reasoning=content_block.data, redacted=True)
             )
-        elif isinstance(content_block, ThinkingBlock):
-            # also record the thinking signature for this thinking in the side list
-            # this is b/c if we are operating within a bridge then scaffolds (e.g.
-            # responses with store=False) will not send back the id/signature.
-            assistant_internal().thinking_signatures[
-                mm3_hash(content_block.thinking)
-            ] = content_block.signature
 
-            # append the content
-            content.append(
-                ContentReasoning(
-                    reasoning=content_block.thinking, signature=content_block.signature
-                )
+            # reasoning won't round trip through bridges w/ simplistic handling
+            # (e.g. OpenAI completions) so we also save for replay
+            assistant_internal().thinking_blocks[mm3_hash(content_block.data)] = cast(
+                RedactedThinkingBlockParam, content_block.model_dump(exclude_none=True)
             )
 
     return content, tool_calls
@@ -1770,17 +1879,6 @@ def message_stop_reason(message: Message) -> tuple[StopReason, bool]:
             return "unknown", message.stop_reason == "pause_turn"
 
 
-def split_system_messages(
-    input: list[ChatMessage], config: GenerateConfig
-) -> Tuple[list[ChatMessageSystem], list[ChatMessage]]:
-    # split messages
-    system_messages = [m for m in input if isinstance(m, ChatMessageSystem)]
-    messages = [m for m in input if not isinstance(m, ChatMessageSystem)]
-
-    # return
-    return system_messages, cast(list[ChatMessage], messages)
-
-
 web_search_result_block_param_adapter = TypeAdapter[
     WebSearchToolResultBlockParamContentParam
 ](WebSearchToolResultBlockParamContentParam)
@@ -1821,29 +1919,16 @@ async def message_block_params(
         return [await image_block_param(content.image)]
 
     elif isinstance(content, ContentReasoning):
-        if content.redacted:
-            return [
-                RedactedThinkingBlockParam(
-                    type="redacted_thinking",
-                    data=content.reasoning,
-                )
-            ]
-        else:
-            signature = content.signature
-            if signature is None:
-                # see if we can get it from assistant_internal()
-                signature = assistant_internal().thinking_signatures.get(
-                    mm3_hash(content.reasoning), None
-                )
-                if signature is None:
-                    raise ValueError("Thinking content without signature.")
-            return [
-                ThinkingBlockParam(
-                    type="thinking",
-                    thinking=content.reasoning,
-                    signature=signature,
-                )
-            ]
+        # lookup in assistant internal
+        thinking_block_param = assistant_internal().thinking_blocks.get(
+            mm3_hash(content.reasoning), None
+        )
+        if thinking_block_param is not None:
+            return [thinking_block_param]
+
+        # if it's not in there then this is reasoning that is coming from another
+        # system (e.g. in an agent handoff) so we turn it into normal text
+        return [TextBlockParam(type="text", text=content.text)]
 
     elif isinstance(content, ContentToolUse):
         if content.id in assistant_internal().server_mcp_tool_uses:
